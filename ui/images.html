@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Images</title>
+        <link rel="stylesheet" href="image-inventory.css" />
+        <!-- The bridge to the app. Served by K8s Dockside itself, always at this path. -->
+        <script src="/plugin-ui/_sdk/k8sdockside.js"></script>
+    </head>
+    <body class="page page-images">
+        <header class="top">
+            <div class="brand">
+                <span class="logo" id="logo"></span>
+                <div>
+                    <h1>Images</h1>
+                    <p id="where" class="faint">Connecting…</p>
+                </div>
+            </div>
+            <label class="search">
+                <span id="search-icon"></span>
+                <input id="query" type="search" placeholder="Find an image, tag, workload or pod" autocomplete="off" spellcheck="false" aria-label="Find an image" />
+            </label>
+            <label class="ns-pick">
+                <span class="faint small">Namespace</span>
+                <select id="namespace" class="picker"></select>
+            </label>
+        </header>
+
+        <p id="error" class="banner error" role="alert" hidden></p>
+
+        <div id="body" class="img-layout" hidden>
+            <nav id="filters" class="filters" aria-label="Filter images"></nav>
+            <main id="list" class="img-list"></main>
+        </div>
+
+        <section id="empty" class="empty">
+            <div class="ov-loading">
+                <span class="pulse"></span>
+                <span>Reading what runs in this cluster…</span>
+            </div>
+        </section>
+
+        <!-- A classic script, not type="module": a sandboxed frame has an
+             opaque origin, so a module would be a cross-origin load.
+             Built from src/pages/images.ts. -->
+        <script src="images.js"></script>
+    </body>
+</html>

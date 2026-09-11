@@ -1,0 +1,28 @@
+{
+    "name": "k8sdockside-example-plugin-typescript",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Image inventory: an example K8s Dockside plugin written in TypeScript. Which container images run in the cluster, where they come from, and which of them are risky.",
+    "license": "Apache-2.0",
+    "author": "Roger Westerbo",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/rogerwesterbo/k8sdockside-example-plugin-typescript"
+    },
+    "type": "module",
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "build": "node scripts/build.mjs",
+        "watch": "node scripts/build.mjs --watch",
+        "typecheck": "tsc --noEmit",
+        "test": "vitest run",
+        "check": "npm run typecheck && npm run test && node scripts/build.mjs --check"
+    },
+    "devDependencies": {
+        "esbuild": "0.28.2",
+        "typescript": "^6.0.3",
+        "vitest": "^4.1.11"
+    }
+}

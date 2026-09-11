@@ -1,0 +1,61 @@
+{
+    "$schema": "https://raw.githubusercontent.com/rogerwesterbo/k8sdockside/main/docs/plugin.schema.json",
+    "id": "image-inventory",
+    "name": "Image inventory",
+    "version": "1.0.0",
+    "minAppVersion": "0.0.15",
+    "tagline": "which container images run in this cluster, and where they come from",
+    "icon": "layers",
+    "author": "Roger Westerbo",
+    "docs": "https://kubernetes.io/docs/concepts/containers/images/",
+    "links": [
+        { "label": "Container images", "url": "https://kubernetes.io/docs/concepts/containers/images/" },
+        { "label": "Source", "url": "https://github.com/rogerwesterbo/k8sdockside-example-plugin-typescript" }
+    ],
+    "description": "Every container image the cluster runs, grouped by registry, repository and tag, with the workloads and pods using each one. It works on any cluster: it reads only pods, the workloads that own them, and events.\n\nStart with the Overview: how many images come from how many registries, a ring of where they come from, and the images worth a look — those failing to pull (with the reason in plain words), with containers that are not ready, running two builds of one tag, or floating on :latest. Images is the working page: search and filter everything, open a workload or a pod's logs from it.\n\nDeployments, StatefulSets, DaemonSets and Pods also get an Images panel in their detail view, with each container's tag and digest and a Restart rollout button. Changes are always shown to you before they are made.",
+    "requires": [
+        { "kind": "pods", "label": "Pods" },
+        { "kind": "deployments", "label": "Deployments" },
+        { "kind": "statefulsets", "label": "StatefulSets" },
+        { "kind": "daemonsets", "label": "DaemonSets" }
+    ],
+    "ui": {
+        "kinds": ["replicasets", "jobs", "cronjobs", "events"],
+        "write": true
+    },
+    "overview": { "entry": "overview.html" },
+    "views": [{ "id": "images", "label": "Images", "icon": "dashboard", "type": "custom", "entry": "images.html" }],
+    "cards": [
+        {
+            "label": "Pods",
+            "kind": "pods",
+            "groupBy": "status.phase",
+            "tones": { "Running": "ok", "Succeeded": "info", "Pending": "warn", "Failed": "error", "Unknown": "warn" }
+        }
+    ],
+    "charts": [
+        {
+            "id": "image-pulls",
+            "label": "Image pulls",
+            "attach": "overview",
+            "unit": "ops/s",
+            "legend": "result",
+            "description": "Image pulls the kubelets make, and how many of them fail. Needs the kubelets' own metrics scraped, as kube-prometheus-stack does.",
+            "query": "label_replace(sum(rate(kubelet_runtime_operations_total{operation_type=\"pull_image\"}[5m])), \"result\", \"pulls\", \"\", \"\") or label_replace(sum(rate(kubelet_runtime_operations_errors_total{operation_type=\"pull_image\"}[5m])), \"result\", \"failures\", \"\", \"\")"
+        },
+        {
+            "id": "distinct-images",
+            "label": "Distinct images running",
+            "attach": "overview",
+            "unit": "count",
+            "description": "How many different image references the cluster's containers run, from kube-state-metrics. A step up and back down is a rollout; a line that only climbs is old images piling up.",
+            "query": "count(count by (image) (kube_pod_container_info))"
+        }
+    ],
+    "sections": [
+        { "id": "deployment-images", "label": "Images", "kind": "deployments", "entry": "workload.html", "height": 220 },
+        { "id": "statefulset-images", "label": "Images", "kind": "statefulsets", "entry": "workload.html", "height": 220 },
+        { "id": "daemonset-images", "label": "Images", "kind": "daemonsets", "entry": "workload.html", "height": 220 },
+        { "id": "pod-images", "label": "Images", "kind": "pods", "entry": "workload.html", "height": 200 }
+    ]
+}
