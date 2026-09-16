@@ -293,9 +293,9 @@
       const key = `${ns}/${owner.name}`;
       const up = replicaSetOwners.get(key);
       if (up) return workloadRef(up.kind, ns, up.name);
-      const hash = pod.metadata.labels?.["pod-template-hash"];
-      if (!replicaSetOwners.has(key) && hash && owner.name.endsWith("-" + hash)) {
-        return workloadRef("Deployment", ns, owner.name.slice(0, -hash.length - 1));
+      const hash2 = pod.metadata.labels?.["pod-template-hash"];
+      if (!replicaSetOwners.has(key) && hash2 && owner.name.endsWith("-" + hash2)) {
+        return workloadRef("Deployment", ns, owner.name.slice(0, -hash2.length - 1));
       }
     }
     if (owner.kind === "Job") {
@@ -719,6 +719,360 @@
     return () => stops.forEach((stop) => stop());
   }
 
+  // src/model/versions.ts
+  var VERSION = /^([vV]?)(\d{1,15}(?:\.\d{1,15}){0,3})(?:([-+_])(.+))?$/;
+  var COMMIT = /^g?[0-9a-f]{7,40}$/i;
+  var STAGES = { alpha: 1, beta: 2, pre: 3, preview: 3, rc: 4, cr: 4 };
+  var PRERELEASE = /* @__PURE__ */ new Set([
+    "prerelease",
+    "dev",
+    "devel",
+    "develop",
+    "development",
+    "snapshot",
+    "nightly",
+    "canary",
+    "next",
+    "edge",
+    "unstable",
+    "experimental",
+    "insider",
+    "insiders",
+    "milestone",
+    "wip",
+    "test",
+    "testing",
+    "debug"
+  ]);
+  var FLAVOURS = /* @__PURE__ */ new Set(["test", "testing", "debug"]);
+  var SCHEME_BREAK = 1e3;
+  function readSuffix(suffix) {
+    const out = { shape: "", numbers: [], prerelease: false, stepsOnly: true };
+    out.shape = suffix.replace(/[A-Za-z0-9]+/g, (segment) => {
+      if (COMMIT.test(segment) && /\d/.test(segment) && /[a-f]/i.test(segment)) {
+        out.stepsOnly = false;
+        return "#";
+      }
+      return segment.replace(/[A-Za-z]+|\d+/g, (run) => {
+        if (/^\d/.test(run)) {
+          out.numbers.push(Number(run));
+          return "0";
+        }
+        const word = run.toLowerCase();
+        const stage = STAGES[word];
+        if (stage !== void 0) {
+          out.prerelease = true;
+          out.numbers.push(stage);
+          return "~";
+        }
+        if (PRERELEASE.has(word)) {
+          out.prerelease = true;
+          if (FLAVOURS.has(word)) out.stepsOnly = false;
+        } else {
+          out.stepsOnly = false;
+        }
+        return run;
+      });
+    });
+    return out;
+  }
+  function parseVersion(tag) {
+    const m = VERSION.exec(tag);
+    if (!m) return null;
+    const prefix = m[1] ?? "";
+    const parts = (m[2] ?? "").split(".").map(Number);
+    const suffix = m[3] ? m[3] + (m[4] ?? "") : "";
+    const s = readSuffix(suffix);
+    const base = `${prefix}/${parts.length}/`;
+    return {
+      tag,
+      prefix,
+      parts,
+      suffix,
+      numbers: s.numbers,
+      shape: base + s.shape,
+      releaseShape: s.prerelease && s.stepsOnly && suffix ? base : "",
+      prerelease: s.prerelease
+    };
+  }
+  function compareNumbers(a, b) {
+    const n = Math.max(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+      const d = (a[i] ?? 0) - (b[i] ?? 0);
+      if (d) return d < 0 ? -1 : 1;
+    }
+    return 0;
+  }
+  function releaseLast(a, b) {
+    if (a.prerelease && !b.prerelease && !b.suffix) return -1;
+    if (b.prerelease && !a.prerelease && !a.suffix) return 1;
+    return 0;
+  }
+  function compareVersions(a, b) {
+    return compareNumbers(a.parts, b.parts) || releaseLast(a, b) || compareNumbers(a.numbers, b.numbers);
+  }
+  function noUpdates() {
+    return { patch: null, minor: null, major: null, kind: null };
+  }
+  function stepOf(from, to) {
+    if (to.parts[0] !== from.parts[0]) return "major";
+    if (from.parts.length > 1 && to.parts[1] !== from.parts[1]) return "minor";
+    return "patch";
+  }
+  function mayBeVersion(tag) {
+    const c = tag.charCodeAt(0);
+    return c >= 48 && c <= 57 || c === 118 || c === 86;
+  }
+  function findUpdates(tag, tags) {
+    const out = noUpdates();
+    const current = parseVersion(tag);
+    if (!current) return out;
+    const small = (current.parts[0] ?? 0) < SCHEME_BREAK;
+    const best = {};
+    for (const candidate of tags) {
+      if (candidate === tag || !mayBeVersion(candidate)) continue;
+      const v = parseVersion(candidate);
+      if (!v) continue;
+      if (v.prerelease && !current.prerelease) continue;
+      if (v.shape !== current.shape && v.shape !== current.releaseShape) continue;
+      if (small && (v.parts[0] ?? 0) >= SCHEME_BREAK) continue;
+      if (compareVersions(v, current) <= 0) continue;
+      const kind = stepOf(current, v);
+      const have = best[kind];
+      if (!have || compareVersions(v, have) > 0) best[kind] = v;
+    }
+    out.patch = best.patch?.tag ?? null;
+    out.minor = best.minor?.tag ?? null;
+    out.major = best.major?.tag ?? null;
+    out.kind = out.major ? "major" : out.minor ? "minor" : out.patch ? "patch" : null;
+    return out;
+  }
+  var PARTS_RANK = [9, 3, 1, 0, 2];
+  function preferred(a, b) {
+    if (a.count !== b.count) return a.count > b.count;
+    const plainA = a.newest.suffix ? 1 : 0;
+    const plainB = b.newest.suffix ? 1 : 0;
+    if (plainA !== plainB) return plainA < plainB;
+    const partsA = PARTS_RANK[a.newest.parts.length] ?? 9;
+    const partsB = PARTS_RANK[b.newest.parts.length] ?? 9;
+    if (partsA !== partsB) return partsA < partsB;
+    return a.key < b.key;
+  }
+  function newestVersion(tags) {
+    const shapes = /* @__PURE__ */ new Map();
+    for (const tag of tags) {
+      if (!mayBeVersion(tag)) continue;
+      const v = parseVersion(tag);
+      if (!v || v.prerelease) continue;
+      const key = (v.parts[0] ?? 0) >= SCHEME_BREAK ? v.shape + "/dated" : v.shape;
+      const have = shapes.get(key);
+      if (!have) shapes.set(key, { key, count: 1, newest: v });
+      else {
+        have.count++;
+        if (compareVersions(v, have.newest) > 0) have.newest = v;
+      }
+    }
+    let pick;
+    for (const s of shapes.values()) if (!pick || preferred(s, pick)) pick = s;
+    return pick?.newest.tag ?? null;
+  }
+
+  // src/model/updates.ts
+  var STATE_ORDER = ["major", "minor", "patch", "rebuilt", "failed", "unknown", "pending", "current"];
+  var STATE_RANK = Object.fromEntries(STATE_ORDER.map((s, i) => [s, i]));
+  function hasUpdate(state2) {
+    return state2 === "major" || state2 === "minor" || state2 === "patch" || state2 === "rebuilt";
+  }
+  var TAG_LIMIT = 1e4;
+  var FAILURE_LABEL = {
+    auth: "needs credentials",
+    limited: "rate-limited",
+    missing: "not found",
+    unreachable: "unreachable",
+    error: "failed"
+  };
+  var FAILURE_GIST = {
+    auth: "the registry wants credentials",
+    limited: "the registry is rate-limiting",
+    missing: "the registry does not know the repository",
+    unreachable: "the registry could not be reached",
+    error: "the registry could not be asked"
+  };
+  function failureText(lookup) {
+    switch (lookup.status) {
+      case "ok":
+        return "";
+      case "auth":
+        return "The registry wants credentials; only public images are checked.";
+      case "limited":
+        return "The registry is rate-limiting; try again later.";
+      case "missing":
+        return "The registry does not know this repository (or this tag).";
+      case "unreachable":
+        return `Could not reach ${lookup.registry}` + (lookup.error ? `: ${lookup.error}` : ".");
+      default:
+        return lookup.error || "The registry could not be asked.";
+    }
+  }
+  function refusedLookup(ref, image, reason, now) {
+    return {
+      image,
+      registry: ref.registry,
+      repository: ref.repository,
+      tag: effectiveTag(ref),
+      tags: [],
+      truncated: false,
+      digest: "",
+      checkedAt: now,
+      status: "error",
+      error: reason
+    };
+  }
+  function tagsPage(ref) {
+    if (ref.registry === DOCKER_HUB) {
+      const official = ref.repository.startsWith("library/");
+      return {
+        label: "Tags on Docker Hub",
+        url: official ? `https://hub.docker.com/_/${ref.repository.slice("library/".length)}/tags` : `https://hub.docker.com/r/${ref.repository}/tags`
+      };
+    }
+    if (ref.registry === "quay.io") return { label: "Tags on Quay", url: `https://quay.io/repository/${ref.repository}?tab=tags` };
+    return null;
+  }
+  function workloadsOf(entry) {
+    const byKey = /* @__PURE__ */ new Map();
+    for (const usage of entry.usages) {
+      const running = usage.pods.filter((p) => !p.finished).length;
+      if (!running) continue;
+      const have = byKey.get(usage.workload.key);
+      if (have) have.running += running;
+      else byKey.set(usage.workload.key, { workload: usage.workload, usage, running });
+    }
+    return [...byKey.values()].sort((a, b) => b.running - a.running || a.workload.key.localeCompare(b.workload.key));
+  }
+  function updateRow(entry, lookup) {
+    const ref = entry.ref;
+    const tag = effectiveTag(ref);
+    const workloads = workloadsOf(entry);
+    const row = {
+      key: entry.key,
+      entry,
+      tag,
+      ask: tag ? entry.podSpelling : "",
+      versioned: !!tag && parseVersion(tag) !== null,
+      lookup: tag ? lookup : null,
+      state: "pending",
+      updates: noUpdates(),
+      newest: null,
+      repushed: false,
+      behind: 0,
+      staleDigests: [],
+      reason: "",
+      note: "",
+      containers: entry.containers,
+      workloads,
+      namespaces: [...new Set(workloads.map((w) => w.workload.namespace))].sort(),
+      registryLabel: registryInfo(ref.registry).label
+    };
+    if (!tag) {
+      row.state = "unknown";
+      row.note = "Pinned by a digest alone: there is no tag to look for newer versions of.";
+      return row;
+    }
+    if (!row.lookup) return row;
+    const answer = row.lookup;
+    if (answer.status !== "ok") {
+      row.state = "failed";
+      row.reason = failureText(answer);
+      return row;
+    }
+    row.updates = findUpdates(tag, answer.tags);
+    if (!row.versioned) row.newest = newestVersion(answer.tags);
+    const builds = [];
+    for (const u of entry.usages) {
+      for (const p of u.pods) {
+        const build = p.finished ? "" : comparableDigest(p, ref);
+        if (build) builds.push(build);
+      }
+    }
+    const compared = !!answer.digest && builds.length > 0;
+    if (compared) {
+      const stale = builds.filter((d) => d !== answer.digest);
+      const counts = /* @__PURE__ */ new Map();
+      for (const d of stale) counts.set(d, (counts.get(d) ?? 0) + 1);
+      row.behind = stale.length;
+      row.staleDigests = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([d]) => d);
+      row.repushed = stale.length > 0;
+    }
+    if (row.updates.kind) row.state = row.updates.kind;
+    else if (row.repushed) row.state = "rebuilt";
+    else if (row.versioned || compared) row.state = "current";
+    else {
+      row.state = "unknown";
+      row.note = !answer.digest ? `:${tag} is not a version, and the registry did not say which build it points at.` : `:${tag} is not a version, and no pod has reported which build it runs yet.`;
+    }
+    if (answer.truncated) {
+      const cut = `Only the first ${TAG_LIMIT} tags were read, so a newer one may be missing.`;
+      row.note = row.note ? `${row.note} ${cut}` : cut;
+    }
+    return row;
+  }
+  function byUrgency(a, b) {
+    return STATE_RANK[a.state] - STATE_RANK[b.state] || b.containers - a.containers || a.key.localeCompare(b.key);
+  }
+  function summarise(rows) {
+    const counts = Object.fromEntries(STATE_ORDER.map((s) => [s, 0]));
+    const failures = /* @__PURE__ */ new Map();
+    const workloads = /* @__PURE__ */ new Set();
+    let containers = 0;
+    let oldest = 0;
+    for (const r of rows) {
+      counts[r.state]++;
+      if (hasUpdate(r.state)) {
+        containers += r.containers;
+        for (const w of r.workloads) workloads.add(w.workload.key);
+      }
+      if (r.lookup && r.lookup.status !== "ok") failures.set(r.lookup.status, (failures.get(r.lookup.status) ?? 0) + 1);
+      const t = r.lookup ? Date.parse(r.lookup.checkedAt) : NaN;
+      if (Number.isFinite(t) && (!oldest || t < oldest)) oldest = t;
+    }
+    let commonFailure = null;
+    let tied = false;
+    for (const [status, count2] of failures) {
+      if (commonFailure && count2 === commonFailure.count) tied = true;
+      if (!commonFailure || count2 > commonFailure.count) {
+        commonFailure = { status, gist: FAILURE_GIST[status], count: count2 };
+        tied = false;
+      }
+    }
+    if (tied) commonFailure = null;
+    return {
+      images: rows.length,
+      counts,
+      updates: rows.filter((r) => hasUpdate(r.state)).length,
+      containers,
+      workloads: workloads.size,
+      repushed: rows.filter((r) => r.repushed).length,
+      askable: rows.filter((r) => r.ask).length,
+      answered: rows.filter((r) => r.ask && r.lookup).length,
+      oldestAnswer: oldest,
+      commonFailure
+    };
+  }
+  function buildUpdates(inv, lookups) {
+    const rows = inv.images.filter((i) => i.running && i.ref.valid).map((i) => updateRow(i, lookups.get(i.key) ?? null));
+    rows.sort(byUrgency);
+    return {
+      rows,
+      summary: summarise(rows),
+      signature: fingerprint(
+        inv.signature + JSON.stringify(
+          rows.map((r) => [r.key, r.state, r.updates, r.newest, r.behind, r.reason, r.note, r.lookup?.checkedAt ?? "", r.lookup?.digest ?? "", r.workloads.map((w) => [w.workload.key, w.running])])
+        )
+      )
+    };
+  }
+
   // src/ui/icons.ts
   var ICONS = {
     // Stacked layers: an image is its layers.
@@ -838,177 +1192,25 @@
     node.addEventListener("click", onClick);
     return node;
   }
-  function linkButton(text, onClick, title) {
-    const node = el("button", "link", text);
-    node.type = "button";
-    if (title) node.title = title;
-    node.addEventListener("click", onClick);
+  function iconButton(iconName, label, onClick, className = "") {
+    const node = button("", "icon-button" + (className ? " " + className : ""), iconName, onClick);
+    node.title = label;
+    node.setAttribute("aria-label", label);
     return node;
-  }
-
-  // src/ui/charts.ts
-  function ring(slices, centre, opts = {}) {
-    const size = opts.size ?? 184;
-    const thickness = opts.thickness ?? 20;
-    const r = (size - thickness) / 2;
-    const c = 2 * Math.PI * r;
-    const mid = size / 2;
-    const wrap = el("div", "ring");
-    wrap.style.width = wrap.style.height = size + "px";
-    const drawing = svg("svg", { viewBox: `0 0 ${size} ${size}`, class: "ring-svg", role: "img" });
-    if (opts.label) drawing.setAttribute("aria-label", opts.label);
-    drawing.appendChild(svg("circle", { cx: mid, cy: mid, r, class: "ring-track", "stroke-width": thickness }));
-    const total = slices.reduce((n, s) => n + s.value, 0);
-    const gap = slices.length > 1 ? Math.min(3, c / slices.length / 4) : 0;
-    let offset = 0;
-    for (const s of slices) {
-      if (!total || s.value <= 0) continue;
-      const length = s.value / total * c;
-      const arc = svg("circle", {
-        cx: mid,
-        cy: mid,
-        r,
-        class: "ring-arc",
-        "stroke-width": thickness,
-        "stroke-dasharray": `${Math.max(0.8, length - gap)} ${c}`,
-        "stroke-dashoffset": String(-offset),
-        transform: `rotate(-90 ${mid} ${mid})`
-      });
-      arc.style.stroke = s.colour;
-      const title = svg("title");
-      title.textContent = s.title;
-      arc.appendChild(title);
-      drawing.appendChild(arc);
-      offset += length;
-    }
-    const inner = el("div", "ring-centre");
-    inner.appendChild(centre);
-    add(wrap, drawing, inner);
-    return wrap;
-  }
-  function formatValue(v, unit) {
-    if (!Number.isFinite(v)) return "—";
-    const round = (n) => Math.abs(n) >= 100 ? String(Math.round(n)) : Math.abs(n) >= 10 ? n.toFixed(1).replace(/\.0$/, "") : n.toFixed(2).replace(/\.?0+$/, "") || "0";
-    const bytes = (n) => {
-      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-      let i = 0;
-      while (Math.abs(n) >= 1024 && i < units.length - 1) {
-        n /= 1024;
-        i++;
-      }
-      return `${round(n)} ${units[i]}`;
-    };
-    switch (unit) {
-      case "count":
-        return String(Math.round(v));
-      case "percent":
-        return `${round(v * 100)}%`;
-      case "ops/s":
-        return `${round(v)}/s`;
-      case "cores":
-        return `${round(v)} cores`;
-      case "bytes":
-        return bytes(v);
-      case "bytes/s":
-        return `${bytes(v)}/s`;
-      case "seconds":
-        return v < 120 ? `${round(v)}s` : v < 7200 ? `${round(v / 60)}m` : `${round(v / 3600)}h`;
-      default:
-        return round(v);
-    }
-  }
-  function tokenColour(c) {
-    return getComputedStyle(document.documentElement).getPropertyValue(c.token).trim() || c.fallback;
-  }
-  var gradients = 0;
-  function lineChart(chart, colourOf) {
-    const card = el("article", "chart");
-    const head = el("div", "chart-head");
-    head.appendChild(el("h3", "", chart.label));
-    card.appendChild(head);
-    if (chart.description) card.appendChild(el("p", "chart-desc", chart.description));
-    const series = chart.series.filter((s) => s.points.length > 0);
-    if (chart.error || !series.length) {
-      card.appendChild(el("p", "quiet", chart.error ? chart.error : "No data in this window."));
-      return card;
-    }
-    let minT = Infinity;
-    let maxT = -Infinity;
-    let maxV = 0;
-    for (const s of series) {
-      for (const p of s.points) {
-        minT = Math.min(minT, p.t);
-        maxT = Math.max(maxT, p.t);
-        if (Number.isFinite(p.v)) maxV = Math.max(maxV, p.v);
-      }
-    }
-    if (maxT === minT) maxT = minT + 1;
-    const top = maxV > 0 ? maxV * 1.15 : 1;
-    const W = 600;
-    const H = 120;
-    const x = (t) => (t - minT) / (maxT - minT) * W;
-    const y = (v) => H - Math.max(0, v) / top * H;
-    const step = (maxT - minT) / 60;
-    const plot = el("div", "chart-plot");
-    const drawing = svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", class: "chart-svg", role: "img" });
-    drawing.setAttribute("aria-label", `${chart.label}: ${series.map((s) => `${s.name || chart.label} ${formatValue(s.points[s.points.length - 1].v, chart.unit)}`).join(", ")}`);
-    const defs = svg("defs");
-    drawing.appendChild(defs);
-    for (const f of [0.25, 0.5, 0.75, 1]) {
-      const gy = H * (1 - f / 1.15);
-      drawing.appendChild(svg("line", { x1: 0, x2: W, y1: gy, y2: gy, class: "chart-grid" }));
-    }
-    const legend = el("div", "chart-legend");
-    series.forEach((s, i) => {
-      const colour = tokenColour(colourOf(s.name, i));
-      const id = `fill-${++gradients}`;
-      const gradient = svg("linearGradient", { id, x1: 0, y1: 0, x2: 0, y2: 1 });
-      gradient.appendChild(svg("stop", { offset: "0%", "stop-color": colour, "stop-opacity": 0.32 }));
-      gradient.appendChild(svg("stop", { offset: "100%", "stop-color": colour, "stop-opacity": 0 }));
-      defs.appendChild(gradient);
-      const runs = [];
-      let run = [];
-      s.points.forEach((p, j) => {
-        const prev = s.points[j - 1];
-        if (!Number.isFinite(p.v) || prev && p.t - prev.t > step * 3) {
-          if (run.length) runs.push(run);
-          run = [];
-          if (!Number.isFinite(p.v)) return;
-        }
-        run.push(p);
-      });
-      if (run.length) runs.push(run);
-      for (const r of runs) {
-        const d = r.map((p, j) => `${j ? "L" : "M"}${x(p.t).toFixed(1)} ${y(p.v).toFixed(1)}`).join(" ");
-        const first = r[0];
-        const last = r[r.length - 1];
-        drawing.appendChild(svg("path", { d: `${d} L${x(last.t).toFixed(1)} ${H} L${x(first.t).toFixed(1)} ${H} Z`, fill: `url(#${id})`, class: "chart-area" }));
-        drawing.appendChild(svg("path", { d, stroke: colour, class: "chart-line" }));
-      }
-      const latest = s.points[s.points.length - 1];
-      const key = el("span", "chart-key");
-      const dot = el("i", "dot");
-      dot.style.background = colour;
-      add(key, dot, el("span", "", s.name || chart.label), el("strong", "", formatValue(latest.v, chart.unit)));
-      legend.appendChild(key);
-    });
-    add(plot, drawing, el("span", "chart-top", formatValue(maxV, chart.unit)));
-    add(card, plot, legend);
-    return card;
   }
 
   // src/ui/format.ts
   function plural(n, one, many = one + "s") {
     return `${n} ${n === 1 ? one : many}`;
   }
-  function percent(part, whole) {
-    if (!whole) return "0%";
-    const p = part / whole * 100;
-    return (p > 0 && p < 1 ? "<1" : String(Math.round(p))) + "%";
-  }
-  function words(list) {
-    if (list.length <= 1) return list[0] ?? "";
-    return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
+  function ago(ms, now = Date.now()) {
+    if (!ms) return "";
+    const d = Math.max(0, now - ms);
+    if (d < 1e4) return "just now";
+    if (d < 6e4) return `${Math.round(d / 1e3)}s ago`;
+    if (d < 36e5) return `${Math.round(d / 6e4)}m ago`;
+    if (d < 1728e5) return `${Math.round(d / 36e5)}h ago`;
+    return `${Math.round(d / 864e5)}d ago`;
   }
 
   // src/ui/page.ts
@@ -1026,23 +1228,32 @@
       byId("error").hidden = true;
     }
   };
-  function every(ms, fn, onError = banner.show) {
-    let stopped = false;
-    let timer;
-    const run = () => {
-      Promise.resolve().then(fn).catch((err) => {
-        if (!stopped) onError(err);
-      }).then(() => {
-        if (!stopped) timer = setTimeout(run, ms);
-      });
-    };
-    run();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
+  function readHash() {
+    const out = {};
+    for (const pair of location.hash.replace(/^#/, "").split("&")) {
+      const cut = pair.indexOf("=");
+      if (cut <= 0) continue;
+      try {
+        out[pair.slice(0, cut)] = decodeURIComponent(pair.slice(cut + 1));
+      } catch {
+      }
+    }
+    return out;
   }
-  function politely(root, redraw2) {
+  function writeHash(values) {
+    const text = Object.entries(values).filter((entry) => typeof entry[1] === "string" && entry[1] !== "").map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+    const hash2 = text ? "#" + text : "";
+    if (hash2 === location.hash || !hash2 && !location.hash) return;
+    try {
+      history.replaceState(null, "", hash2 || location.pathname);
+    } catch {
+      try {
+        location.hash = text;
+      } catch {
+      }
+    }
+  }
+  function politely(root, redraw) {
     let pressed = false;
     let owed = false;
     const busy = () => {
@@ -1056,7 +1267,7 @@
     const settle = () => {
       if (owed && !busy()) {
         owed = false;
-        keepFocus(root, redraw2);
+        keepFocus(root, redraw);
       }
     };
     root.addEventListener("pointerdown", () => pressed = true);
@@ -1074,16 +1285,16 @@
     });
     return () => {
       if (busy()) owed = true;
-      else keepFocus(root, redraw2);
+      else keepFocus(root, redraw);
     };
   }
-  function keepFocus(root, redraw2) {
+  function keepFocus(root, redraw) {
     const active = document.activeElement;
     const key = active instanceof HTMLElement && root.contains(active) ? active.dataset.focus : void 0;
-    redraw2();
+    redraw();
     if (key) {
-      const again = [...root.querySelectorAll("[data-focus]")].find((n) => n.dataset.focus === key);
-      again?.focus({ preventScroll: true });
+      const again2 = [...root.querySelectorAll("[data-focus]")].find((n) => n.dataset.focus === key);
+      again2?.focus({ preventScroll: true });
     }
   }
 
@@ -1098,540 +1309,481 @@
     node.style.background = registryColour(colour);
     return node;
   }
-  var ISSUE_ICON = {
-    invalid: "failed",
-    pull: "failed",
-    "not-ready": "alert",
-    drift: "digest",
-    implicit: "moving",
-    latest: "moving",
-    floating: "moving",
-    frozen: "snowflake",
-    unpinned: "unlock",
-    idle: "clock"
-  };
-  function issueChip(issue) {
-    const tone = issue.tone === "ok" ? "ok" : issue.tone;
-    return chip(issue.label, tone, ISSUE_ICON[issue.kind], issue.text);
+  var RISK_ICON = { pinned: "lock", tagged: "tag", floating: "moving", latest: "moving", implicit: "alert" };
+  function tagPill(entry) {
+    const { ref, risk } = entry;
+    const floating = risk === "latest" || risk === "implicit" || risk === "floating";
+    const node = el("span", "tagpill " + (risk === "pinned" ? "pinned" : floating ? "floating" : "tagged"));
+    node.appendChild(icon(RISK_ICON[risk]));
+    let text;
+    if (!ref.valid) text = ref.raw.trim() || "(empty)";
+    else if (risk === "implicit") text = "latest (untagged)";
+    else if (ref.tag && ref.digest) text = `${ref.tag} @ ${shortDigest(ref.digest)}`;
+    else if (ref.digest) text = "@" + shortDigest(ref.digest);
+    else text = ref.tag;
+    node.appendChild(el("span", "", text));
+    node.title = risk === "pinned" ? `Pinned by digest ${ref.digest}: the same bytes on every node.` : risk === "tagged" ? "A tag, not a digest: a push to the same tag changes what the next pod runs." : "A floating tag: which build runs depends on when each node pulled it.";
+    return node;
   }
-  function issueChips(entry, opts = {}) {
-    return entry.issues.filter((i) => (i.kind !== "unpinned" || opts.unpinned) && (i.kind !== "idle" || opts.idle !== false) && (opts.tag !== false || !TAG_KINDS.has(i.kind))).map(issueChip);
-  }
-  var TAG_KINDS = /* @__PURE__ */ new Set(["latest", "implicit", "floating"]);
-  function diagnosisBox(issue) {
-    const d = issue.diagnosis;
-    if (!d) return null;
-    const box = el("div", "why error");
-    box.appendChild(icon("alert"));
-    const body = el("div", "why-body");
-    add(body, el("div", "why-head", d.title), el("div", "why-hint", d.hint));
-    if (d.evidence) {
-      const raw = el("code", "why-raw", d.evidence);
-      raw.title = "As the node reported it";
-      body.appendChild(raw);
-    }
-    box.appendChild(body);
-    return box;
-  }
-  function workloadButton(w, open2, opts = {}) {
-    const node = button("", "wl", kindIcon(w.kind), () => open2(w));
+  function workloadButton(w, open, opts = {}) {
+    const node = button("", "wl", kindIcon(w.kind), () => open(w));
     node.dataset.focus = "wl:" + w.key;
     add(node, el("span", "wl-name", w.name), opts.namespace !== false ? el("span", "wl-ns", w.namespace) : null, opts.detail ? el("span", "wl-detail", opts.detail) : null);
     node.title = `Open ${w.kind} ${w.namespace ? w.namespace + "/" : ""}${w.name}` + (w.appKind ? "" : " (the app has no tab for this kind; opens its first pod)");
     return node;
   }
-  function readiness(ready, total, pulling = 0) {
-    const node = el("span", "meter");
-    const bar = el("span", "meter-bar");
-    const tone = pulling ? "error" : ready < total ? "warn" : "ok";
-    const fill = el("i", "meter-fill " + tone);
-    fill.style.width = total ? `${Math.round(ready / total * 100)}%` : "0%";
-    bar.appendChild(fill);
-    add(node, bar, el("span", "meter-text", total ? `${ready}/${total} ready` : "none running"));
-    node.title = total ? `${plural(ready, "container")} of ${total} running this image ${ready === 1 ? "is" : "are"} ready` : "Nothing runs this image right now";
-    return node;
-  }
-  function imageName(entry, className = "iname") {
-    const node = el("span", className);
-    const ref = entry.ref;
-    if (!ref.valid) {
-      node.appendChild(el("span", "iname-repo", ref.raw.trim()));
-      return node;
-    }
-    const full = familiar(ref, { shortDigest: true });
-    const repoText = familiar({ ...ref, tag: "", digest: "" });
-    add(node, el("span", "iname-repo", repoText), el("span", "iname-tag", full.slice(repoText.length) || ":latest"));
-    node.title = entry.key;
-    return node;
-  }
 
-  // src/pages/overview.ts
-  var SUMMARY_EVERY = 3e4;
-  var CHARTS_EVERY = 6e4;
-  var HISTORY_MINUTES = 24 * 60;
-  var ATTENTION_ROWS = 8;
-  var RING_SLICES = 7;
-  var DOCS = "https://kubernetes.io/docs/concepts/containers/images/";
-  var state = { ctx: null, feed: null, inventory: null, summary: null, panel: null, sig: "", allAttention: false };
+  // src/pages/updates.ts
+  var IN_FLIGHT = 4;
+  var PODS_EVERY = 15e3;
+  var OWNERS_EVERY = 6e4;
+  var DRAW_AFTER = 150;
+  var WORKLOADS_SHOWN = 3;
+  var SHOWS = [
+    { id: "all", label: "All", icon: "grid", test: () => true },
+    { id: "updates", label: "Updates", icon: "update", test: (r) => hasUpdate(r.state) },
+    { id: "major", label: "Major", icon: "update", test: (r) => r.state === "major" },
+    { id: "minor", label: "Minor", icon: "update", test: (r) => r.state === "minor" },
+    { id: "patch", label: "Patch", icon: "update", test: (r) => r.state === "patch" },
+    { id: "rebuilt", label: "Rebuilt", icon: "digest", test: (r) => r.state === "rebuilt" },
+    { id: "current", label: "Up to date", icon: "check", test: (r) => r.state === "current" },
+    { id: "unknown", label: "Can’t tell", icon: "info", test: (r) => r.state === "unknown" },
+    { id: "failed", label: "Couldn’t check", icon: "alert", test: (r) => r.state === "failed" }
+  ];
+  var LOOK = {
+    major: { icon: "update", label: "A newer major version" },
+    minor: { icon: "update", label: "A newer minor version" },
+    patch: { icon: "update", label: "A newer patch" },
+    rebuilt: { icon: "digest", label: "The tag points at a newer build" },
+    current: { icon: "check", label: "Up to date" },
+    unknown: { icon: "info", label: "Nothing to compare" },
+    failed: { icon: "alert", label: "The registry could not be asked" },
+    pending: { icon: "clock", label: "Asking the registry" }
+  };
+  var STEP_TONE = { major: "error", minor: "warn", patch: "info" };
+  var hash = readHash();
+  var state = {
+    ctx: null,
+    inventory: null,
+    inventorySig: "",
+    lookups: /* @__PURE__ */ new Map(),
+    report: null,
+    drawn: "",
+    query: hash.q ?? "",
+    show: SHOWS.some((s) => s.id === hash.show) ? hash.show : "all",
+    namespace: hash.ns ?? ""
+  };
+  function remember() {
+    writeHash({ q: state.query, show: state.show !== "all" && state.show, ns: state.namespace });
+  }
   function fail(err) {
     banner.show(err);
   }
-  function open(w, entry) {
+  var questions = {
+    waiting: [],
+    /** Keys waiting or in flight, so an image is never asked twice at once. */
+    open: /* @__PURE__ */ new Set(),
+    inFlight: 0,
+    /** This round: how many were asked, and how many have been answered. */
+    total: 0,
+    done: 0
+  };
+  function asking() {
+    return questions.inFlight > 0 || questions.waiting.length > 0;
+  }
+  function ask(rows, refresh) {
+    if (!asking()) {
+      questions.total = 0;
+      questions.done = 0;
+    }
+    for (const r of rows) {
+      if (!r.ask || questions.open.has(r.key)) continue;
+      if (!refresh && state.lookups.has(r.key)) continue;
+      questions.open.add(r.key);
+      questions.waiting.push({ key: r.key, image: r.ask, ref: r.entry.ref, refresh });
+      questions.total++;
+    }
+    pump();
+    drawHero();
+  }
+  function pump() {
+    while (questions.inFlight < IN_FLIGHT && questions.waiting.length) {
+      const q = questions.waiting.shift();
+      questions.inFlight++;
+      sdk.registry.lookup({ image: q.image, refresh: q.refresh }).catch((err) => refusedLookup(q.ref, q.image, message(err), (/* @__PURE__ */ new Date()).toISOString())).then((answer) => {
+        state.lookups.set(q.key, answer);
+      }).finally(() => {
+        questions.inFlight--;
+        questions.open.delete(q.key);
+        questions.done++;
+        rebuild();
+        pump();
+      });
+    }
+  }
+  function openWorkload(w, usage) {
     if (w.appKind) {
       sdk.open({ kind: w.appKind, namespace: w.namespace, name: w.name }).catch(fail);
       return;
     }
-    const pod = entry?.usages.find((u) => u.workload.key === w.key)?.pods[0];
+    const pod = usage.pods.find((p) => !p.finished) ?? usage.pods[0];
     if (pod) sdk.open({ kind: "pods", namespace: pod.namespace, name: pod.pod }).catch(fail);
   }
-  function openImages() {
-    sdk.openView("images").catch(fail);
+  function inNamespace(r) {
+    return !state.namespace || r.namespaces.includes(state.namespace);
   }
-  function openUpdates() {
-    sdk.openView("updates").catch(fail);
+  function matchesQuery(r) {
+    const q = state.query.trim().toLowerCase();
+    if (!q) return true;
+    const hay = [r.key, familiar(r.entry.ref), r.tag, r.registryLabel, ...r.entry.spellings, ...r.namespaces];
+    for (const step of [r.updates.patch, r.updates.minor, r.updates.major, r.newest]) if (step) hay.push(step);
+    for (const w of r.workloads) hay.push(w.workload.name);
+    return q.split(/\s+/).every((word) => hay.some((h) => h.toLowerCase().includes(word)));
   }
-  function openUrl(url) {
-    sdk.openUrl(url).catch(fail);
+  function scoped(report) {
+    return report.rows.filter((r) => inNamespace(r) && matchesQuery(r));
   }
   function strong(text, className = "") {
     return el("strong", className, String(text));
   }
-  function verdict(inv) {
-    const t = inv.totals;
-    if (t.pullFailing) return { tone: "error", icon: "failed", status: `${plural(t.pullFailing, "image is", "images are")} failing to pull` };
-    if (t.notReady || t.drift) {
-      const parts = [];
-      if (t.notReady) parts.push(`${plural(t.notReady, "image has", "images have")} containers not ready`);
-      if (t.drift) parts.push(`${plural(t.drift, "tag runs", "tags run")} two builds`);
-      return { tone: "warn", icon: "alert", status: words(parts) };
-    }
-    if (t.floating) return { tone: "warn", icon: "moving", status: `Everything pulls — ${plural(t.floating, "image floats", "images float")} on a moving tag` };
-    return { tone: "ok", icon: "check", status: "Every image pulls, runs and is tagged" };
+  function headline(s, busy) {
+    if (s.updates) return `${s.updates} of ${plural(s.images, "image")} ${s.updates === 1 ? "has an update" : "have updates"}`;
+    if (busy) return s.answered ? "No updates so far" : `Checking ${plural(s.askable, "image")}…`;
+    if (!s.askable) return `${plural(s.images, "image")}, all pinned by digest`;
+    if (s.counts.current === s.images) return s.images === 1 ? "The one image is up to date" : `All ${s.images} images are up to date`;
+    return `No updates found for ${plural(s.images, "image")}`;
   }
-  function headline(inv) {
-    const t = inv.totals;
-    return `${plural(t.images, "image")} from ${plural(t.registries, "registry", "registries")} across ${plural(t.namespaces, "namespace")}`;
-  }
-  function story(inv) {
-    const t = inv.totals;
-    const p = el("p", "ov-story");
-    add(p, strong(plural(t.containers, "container")), " in ", strong(plural(t.pods, "pod")), ` run ${t.running === t.images ? "them" : `${t.running} of them`}`);
-    if (t.idle) add(p, "; ", strong(t.idle), ` ${t.idle === 1 ? "is" : "are"} declared by a workload but not running right now`);
-    add(p, ". ");
-    const parts = [];
-    if (t.pullFailing) parts.push([strong(t.pullFailing, "bad"), el("span", "", ` can’t be pulled`)]);
-    if (t.notReady) parts.push([strong(t.notReady, "warnish"), el("span", "", ` ${t.notReady === 1 ? "has" : "have"} containers that are not ready`)]);
-    if (t.drift) parts.push([strong(t.drift, "warnish"), el("span", "", ` ${t.drift === 1 ? "runs" : "run"} two builds of one tag`)]);
-    if (t.floating) parts.push([strong(t.floating, "warnish"), el("span", "", ` float on :latest or another moving tag`)]);
-    parts.forEach((part, i) => {
-      if (i > 0) add(p, i === parts.length - 1 ? " and " : ", ");
-      add(p, ...part);
+  function drawVerdict(p, s) {
+    clear(p);
+    const c = s.counts;
+    const steps = [];
+    if (c.major) steps.push([strong(c.major, "bad"), " major"]);
+    if (c.minor) steps.push([strong(c.minor, "warnish"), " minor"]);
+    if (c.patch) steps.push([strong(c.patch), " patch"]);
+    if (c.rebuilt) steps.push([strong(c.rebuilt), " rebuilt"]);
+    steps.forEach((step, i) => {
+      if (i > 0) add(p, i === steps.length - 1 ? " and " : ", ");
+      add(p, ...step);
     });
-    if (parts.length) add(p, ". ");
-    add(p, strong(`${t.pinned} of ${t.images}`, t.pinned ? "ok" : ""), t.pinned === 1 ? " is" : " are", " pinned by digest.");
-    return p;
+    if (steps.length) add(p, ", in ", strong(plural(s.containers, "container")), " across ", strong(plural(s.workloads, "workload")), ". ");
+    const alsoPushed = s.repushed - c.rebuilt;
+    if (alsoPushed > 0) {
+      add(p, strong(alsoPushed), ` with a newer version ${alsoPushed === 1 ? "was" : "were"} also pushed again since ${alsoPushed === 1 ? "its" : "their"} pods pulled ${alsoPushed === 1 ? "it" : "them"}. `);
+    }
+    if (c.failed) {
+      const why = s.commonFailure;
+      add(p, strong(c.failed, "warnish"), " couldn’t be checked");
+      if (why) add(p, why.count < c.failed ? `, mostly because ${why.gist} (${why.count})` : `: ${why.gist}`);
+      add(p, ". ");
+    }
+    if (c.unknown) {
+      add(p, strong(c.unknown), ` ${c.unknown === 1 ? "has" : "have"} nothing to compare: a tag that is not a version with no build to check, or a digest with no tag. `);
+    }
+    if (!s.answered && s.askable) {
+      add(p, "The app asks each image’s registry which tags it has — anonymously, so private images cannot be checked.");
+    } else if (!steps.length && !c.failed && !c.unknown && !c.pending) {
+      add(p, "Every version tag is the newest of its kind, and every other tag still points at the build its pods run.");
+    }
   }
-  function registryRing(inv) {
-    const side = el("div", "ov-hero-side");
-    const groups = inv.registries;
-    const shown = groups.slice(0, RING_SLICES);
-    const rest = groups.slice(RING_SLICES);
-    const slices = shown.map((g) => ({ value: g.images, colour: registryColour(g.colour), title: `${g.label}: ${plural(g.images, "image")}` }));
-    if (rest.length) {
-      slices.push({ value: rest.reduce((n, g) => n + g.images, 0), colour: registryColour(7), title: `${plural(rest.length, "other registry", "other registries")}` });
+  function drawProgress(p, s, busy) {
+    clear(p);
+    p.hidden = false;
+    if (busy) {
+      add(p, el("span", "pulse"), el("span", "", `Asked the registries about ${questions.done} of ${plural(questions.total, "image")}…`));
+      return;
     }
-    const centre = el("div", "ring-text");
-    add(centre, el("div", "ring-big", String(inv.totals.registries)), el("div", "ring-small", inv.totals.registries === 1 ? "registry" : "registries"));
-    side.appendChild(ring(slices, centre, { label: `Images by registry: ${shown.map((g) => `${g.label} ${g.images}`).join(", ")}` }));
-    const legend = el("div", "reg-legend");
-    legend.appendChild(el("div", "mini-title", "Where the images come from"));
-    for (const g of shown) {
-      const row = button("", "reg-row", null, openImages);
-      row.title = `${g.registry}: ${plural(g.images, "image")}, ${plural(g.containers, "container")} — open Images`;
-      const names = el("span", "reg-names");
-      add(names, el("span", "reg-label", g.label), g.label !== g.registry ? el("span", "reg-host", g.registry) : null);
-      const share = el("span", "reg-share");
-      const fill = el("i");
-      fill.style.width = percent(g.images, inv.totals.images);
-      fill.style.background = registryColour(g.colour);
-      share.appendChild(fill);
-      add(row, swatch(g.colour), names, g.frozen ? chip("frozen", "warn", "snowflake", `${g.registry} gets no new images; move to registry.k8s.io`) : null, share, el("span", "reg-count", String(g.images)));
-      legend.appendChild(row);
+    if (!s.answered) {
+      p.hidden = true;
+      return;
     }
-    if (rest.length) {
-      const more = button("", "reg-row more", null, openImages);
-      add(more, swatch(7), el("span", "reg-names", `and ${plural(rest.length, "more registry", "more registries")}`), el("span", "reg-share"), el("span", "reg-count", String(rest.reduce((n, g) => n + g.images, 0))));
-      legend.appendChild(more);
-    }
-    side.appendChild(legend);
-    return side;
+    const oldest = ago(s.oldestAnswer);
+    add(p, icon("clock"), el("span", "", `Checked ${plural(s.answered, "image")}` + (oldest ? ` · oldest answer ${oldest}` : "") + " · the app keeps an answer for about half an hour"));
   }
-  function eyebrow() {
-    const node = el("div", "ov-eyebrow");
-    const logo = el("span", "logo");
-    logo.appendChild(icon("logo"));
-    add(node, logo, el("span", "", "Image inventory"), el("span", "faint", "· " + (state.ctx?.contextName ?? "")));
+  function drawHero() {
+    const report = state.report;
+    if (!report) return;
+    const s = report.summary;
+    const busy = asking();
+    const everythingCurrent = s.images > 0 && s.counts.current === s.images;
+    byId("hero").className = "ov-hero up-hero " + (s.updates ? "warn" : busy ? "busy" : everythingCurrent ? "ok" : "muted");
+    const h = byId("headline");
+    clear(h);
+    add(h, icon(s.updates ? "update" : busy ? "clock" : everythingCurrent ? "check" : "info"), el("span", "", headline(s, busy)));
+    drawVerdict(byId("verdict"), s);
+    drawProgress(byId("progress"), s, busy);
+    byId("again").disabled = busy || !s.askable;
+  }
+  function setShow(show) {
+    state.show = show;
+    remember();
+    keepFocus(byId("body"), drawBody);
+  }
+  function drawFilters(report) {
+    const nav = byId("filters");
+    clear(nav);
+    const inScope = scoped(report);
+    for (const s of SHOWS) {
+      const n = inScope.filter(s.test).length;
+      const on = state.show === s.id;
+      const b = button("", `filter ${s.id}` + (on ? " on" : "") + (n ? "" : " zero"), s.icon, () => setShow(s.id));
+      b.dataset.focus = "show:" + s.id;
+      b.setAttribute("aria-pressed", String(on));
+      add(b, el("span", "filter-label", s.label), el("span", "filter-count", String(n)));
+      nav.appendChild(b);
+    }
+  }
+  function usedBy(r) {
+    const line = el("span", "tag-used");
+    const list = r.workloads.filter((w) => !state.namespace || w.workload.namespace === state.namespace);
+    for (const w of list.slice(0, WORKLOADS_SHOWN)) {
+      const b = workloadButton(w.workload, (x) => openWorkload(x, w.usage), { detail: `×${w.running}` });
+      b.dataset.focus = "wl:" + r.key + "|" + w.workload.key;
+      line.appendChild(b);
+    }
+    if (list.length > WORKLOADS_SHOWN) line.appendChild(el("span", "faint small", `+${list.length - WORKLOADS_SHOWN} more`));
+    return line;
+  }
+  function registryLabel(r) {
+    const node = el("span", "up-reg");
+    const group = state.inventory?.registries.find((g) => g.registry === r.entry.ref.registry);
+    add(node, swatch(group?.colour ?? 7), el("span", "", r.registryLabel));
+    node.title = r.entry.ref.registry;
     return node;
   }
-  function drawHero(inv) {
-    const hero = byId("hero");
-    clear(hero);
-    const v = verdict(inv);
-    hero.className = "ov-hero " + v.tone;
-    const main = el("div", "ov-hero-main");
-    main.appendChild(eyebrow());
-    const h1 = el("h1", "ov-verdict");
-    add(h1, icon(v.icon), el("span", "", headline(inv)));
-    main.appendChild(h1);
-    const status = el("p", "ov-status " + v.tone);
-    add(status, el("i", "sdot " + v.tone), el("span", "", v.status));
-    main.appendChild(status);
-    main.appendChild(story(inv));
-    const cta = el("div", "ov-cta");
-    add(
-      cta,
-      button("Browse images", "primary", "grid", openImages),
-      button("Check for updates", "ghost", "update", openUpdates),
-      button("Pods", "ghost", "pod", () => sdk.open({ kind: "pods" }).catch(fail)),
-      button("About image references", "ghost", "book", () => openUrl(DOCS + "#image-names"))
-    );
-    main.appendChild(cta);
-    hero.appendChild(main);
-    hero.appendChild(registryRing(inv));
+  function stateChips(r) {
+    const chips = el("span", "tag-chips");
+    const repo = familiarRepository(r.entry.ref);
+    for (const kind of ["patch", "minor", "major"]) {
+      const tag = r.updates[kind];
+      if (tag) chips.appendChild(chip(`${kind} ${tag}`, STEP_TONE[kind], "update", `A newer ${kind} version: ${repo}:${tag}`));
+    }
+    if (r.repushed) {
+      chips.appendChild(
+        chip(r.state === "rebuilt" ? "rebuilt" : "pushed again", "info", "digest", `:${r.tag} now points at a build ${plural(r.behind, "container")} here ${r.behind === 1 ? "does" : "do"} not run`)
+      );
+    }
+    if (r.newest) chips.appendChild(chip(`newest version ${r.newest}`, "muted", "tag", `The newest release in ${repo}. :${r.tag} is not a version, so it is not compared with it.`));
+    const failed = r.lookup && r.lookup.status !== "ok" ? r.lookup.status : null;
+    if (r.state === "current") chips.appendChild(chip("up to date", "ok", "check"));
+    else if (failed) chips.appendChild(chip(FAILURE_LABEL[failed], "muted", "alert", r.reason));
+    else if (r.state === "unknown") chips.appendChild(chip("can’t tell", "muted", "info", r.note));
+    else if (r.state === "pending") chips.appendChild(chip("asking…", "muted", "clock"));
+    return chips;
   }
-  function tile(label, value, sub, tone, iconName, extra) {
-    const node = el("div", "stat" + (tone ? " " + tone : ""));
-    const top = el("div", "stat-top");
-    add(top, icon(iconName), el("span", "", label));
-    add(node, top, el("div", "stat-value", value), extra ?? null, el("div", "stat-sub", sub));
+  function digestCode(digest) {
+    const node = el("code", "", shortDigest(digest));
+    node.title = digest;
     return node;
   }
-  function drawStats(inv) {
-    const box = byId("stats");
-    clear(box);
-    box.hidden = false;
-    const t = inv.totals;
-    const pinnedMeter = el("div", "stat-meter");
-    const fill = el("i");
-    fill.style.width = percent(t.pinned, t.images);
-    pinnedMeter.appendChild(fill);
-    add(
-      box,
-      tile("Images", String(t.images), t.idle ? `${t.running} running · ${t.idle} declared only` : "all of them running", "", "logo"),
-      tile("Containers", String(t.containers), `in ${plural(t.pods, "pod")}`, "", "container"),
-      tile("Pinned by digest", percent(t.pinned, t.images), `${t.pinned} of ${plural(t.images, "image")}`, t.pinned === t.images && t.images ? "ok" : "", "lock", pinnedMeter),
-      tile("Floating tags", String(t.floating), t.floating ? ":latest, untagged or moving" : "none", t.floating ? "warn" : "ok", "moving"),
-      tile("Pull failures", String(t.pullFailing), t.pullFailing ? `${plural(t.pullContainers, "container")} waiting for an image` : "every image pulls", t.pullFailing ? "error" : "ok", "failed")
-    );
-  }
-  function attentionRow(entry) {
-    const row = el("article", "att " + entry.tone);
-    const top = el("div", "att-top");
-    const mark = el("span", "att-mark " + entry.tone);
-    mark.appendChild(icon(entry.tone === "error" ? "failed" : "alert"));
-    const chips = el("span", "att-chips");
-    add(chips, ...issueChips(entry, { idle: false }));
-    add(top, mark, imageName(entry), chips, entry.containers ? readiness(entry.ready, entry.containers, entry.pulling) : null);
-    row.appendChild(top);
-    const worst = entry.issues[0];
-    if (worst) {
-      if (worst.diagnosis) {
-        row.appendChild(el("p", "att-text", worst.text));
-        const box = diagnosisBox(worst);
-        if (box) row.appendChild(box);
-      } else {
-        row.appendChild(el("p", "att-text", worst.text));
-      }
+  function footOf(r) {
+    const text = el("span", "up-foot-text");
+    if (r.reason) text.appendChild(el("span", "up-reason", r.reason));
+    if (r.repushed && r.lookup) {
+      const stale = r.staleDigests.slice(0, 2);
+      add(text, text.childNodes.length ? " " : null, `:${r.tag} now points at `, digestCode(r.lookup.digest), `; ${plural(r.behind, "container")} ${r.behind === 1 ? "runs" : "run"} `);
+      stale.forEach((d, i) => add(text, i ? ", " : "", digestCode(d)));
+      if (r.staleDigests.length > stale.length) add(text, ` and ${r.staleDigests.length - stale.length} more`);
+      add(text, ".");
+      text.title = "A pod runs the new build once its node pulls the tag again: when the pod starts with imagePullPolicy Always (the default for :latest), or on a node that does not have the old build.";
     }
-    const used = el("div", "att-used");
-    used.appendChild(el("span", "mini-title", "Used by"));
-    const workloads = [...new Map(entry.usages.map((u) => [u.workload.key, u.workload])).values()];
-    for (const w of workloads.slice(0, 4)) used.appendChild(workloadButton(w, (x) => open(x, entry)));
-    if (workloads.length > 4) used.appendChild(el("span", "faint small", `+${workloads.length - 4} more`));
-    row.appendChild(used);
-    return row;
+    if (r.note) add(text, text.childNodes.length ? " " : null, r.note);
+    if (!text.childNodes.length) return null;
+    return add(el("div", "up-foot"), text);
   }
-  function drawAttention(inv) {
-    const box = byId("attention");
-    clear(box);
-    box.hidden = false;
-    const list = inv.images.filter((i) => i.tone === "error" || i.tone === "warn");
-    const bad = list.filter((i) => i.tone === "error").length;
-    box.className = "card attention" + (bad ? " has-error" : list.length ? " has-warn" : " clear");
-    const head = el("div", "card-head");
-    add(head, icon(list.length ? "alert" : "check"), el("h2", "", "Needs attention"));
-    if (list.length) head.appendChild(el("span", "count " + (bad ? "error" : "warn"), String(list.length)));
-    head.appendChild(el("span", "card-sub", list.length ? "Images failing to pull, with containers not ready, running two builds of one tag, or floating on a tag that moves — worst first." : ""));
-    box.appendChild(head);
-    if (!list.length) {
-      const ok = el("div", "all-clear");
-      add(ok, icon("check"), el("span", "", "Nothing needs attention: every image pulls, its containers are ready, and nothing floats on :latest."));
-      box.appendChild(ok);
+  function rowOf(r) {
+    const node = el("article", "tag-row up-row " + r.state);
+    const head = el("div", "tag-head");
+    const mark = el("span", "up-mark " + r.state);
+    mark.appendChild(icon(LOOK[r.state].icon));
+    const checked = r.lookup ? ago(Date.parse(r.lookup.checkedAt)) : "";
+    mark.title = LOOK[r.state].label + (checked ? ` · checked ${checked}` : "");
+    const name = el("code", "repo-name", familiarRepository(r.entry.ref));
+    name.title = r.key;
+    const right = el("span", "tag-right");
+    add(right, usedBy(r), registryLabel(r));
+    const page = tagsPage(r.entry.ref);
+    if (page) {
+      const link = iconButton("open", page.label, () => sdk.openUrl(page.url).catch(fail));
+      link.dataset.focus = "tags:" + r.key;
+      right.appendChild(link);
+    }
+    add(head, mark, name, tagPill(r.entry), stateChips(r), right);
+    node.appendChild(head);
+    const foot = footOf(r);
+    if (foot) node.appendChild(foot);
+    return node;
+  }
+  function clearFilters() {
+    state.query = "";
+    state.show = "all";
+    state.namespace = "";
+    byId("query").value = "";
+    byId("namespace").value = "";
+    remember();
+    keepFocus(byId("body"), drawBody);
+  }
+  function nothingShown() {
+    const none = el("div", "none");
+    const label = SHOWS.find((s) => s.id === state.show)?.label ?? "";
+    const where = [state.query ? `“${state.query}”` : "", state.namespace ? `in ${state.namespace}` : ""].filter(Boolean).join(" ");
+    const text = state.show === "all" ? `No image matches ${where}.` : `Nothing under ${label}${where ? " matches " + where : ""}.`;
+    add(none, icon("search"), el("p", "", text));
+    none.appendChild(button("Clear filters", "ghost small", "close", clearFilters));
+    return none;
+  }
+  function drawList(report) {
+    const list = byId("list");
+    clear(list);
+    const test = SHOWS.find((s) => s.id === state.show)?.test ?? (() => true);
+    const shown = scoped(report).filter(test);
+    if (!shown.length) {
+      list.appendChild(nothingShown());
       return;
     }
-    const rows = el("div", "att-list");
-    const shown = state.allAttention ? list : list.slice(0, ATTENTION_ROWS);
-    for (const entry of shown) rows.appendChild(attentionRow(entry));
-    box.appendChild(rows);
-    if (list.length > ATTENTION_ROWS) {
-      const more = button(state.allAttention ? `Show the first ${ATTENTION_ROWS}` : `Show all ${list.length}`, "ghost small", "chevron-down", () => {
-        state.allAttention = !state.allAttention;
-        drawAttention(inv);
-      });
-      more.dataset.focus = "att-more";
-      box.appendChild(more);
-    }
+    for (const r of shown) list.appendChild(rowOf(r));
   }
-  function drawTop(inv) {
-    const box = byId("top");
-    clear(box);
-    const head = el("div", "card-head");
-    add(head, icon("rank"), el("h2", "", "Most-run images"));
-    const all = button("Browse all", "ghost small push", "grid", openImages);
-    head.appendChild(all);
-    box.appendChild(head);
-    const top = inv.images.filter((i) => i.containers > 0).sort((a, b) => b.containers - a.containers || a.key.localeCompare(b.key)).slice(0, 10);
-    if (!top.length) {
-      box.appendChild(el("p", "quiet", "Nothing is running."));
-      return;
-    }
-    const max = top[0].containers;
-    const list = el("ol", "bars");
-    for (const entry of top) {
-      const li = el("li", "bar-row");
-      const registry = inv.registries.find((g) => g.registry === entry.ref.registry);
-      const track = el("span", "bar-track");
-      const fill = el("i", "bar-fill");
-      fill.style.width = `${Math.max(3, entry.containers / max * 100)}%`;
-      track.appendChild(fill);
-      const workloads = new Set(entry.usages.map((u) => u.workload.key)).size;
-      const label = el("div", "bar-label");
-      add(label, swatch(registry?.colour ?? 7), imageName(entry), el("span", "bar-note", `${plural(entry.containers, "container")} · ${plural(workloads, "workload")}`));
-      add(li, label, track);
-      li.title = `${entry.key}
-${registry?.label ?? entry.ref.registry}`;
-      list.appendChild(li);
-    }
-    box.appendChild(list);
+  function drawBody() {
+    const report = state.report;
+    if (!report) return;
+    drawFilters(report);
+    drawList(report);
   }
-  function drawUsers(inv) {
-    const box = byId("users");
-    clear(box);
-    const head = el("div", "card-head");
-    add(head, icon("users"), el("h2", "", "Biggest users"), el("span", "card-sub", "Namespaces by how many different images they run."));
-    box.appendChild(head);
-    const top = inv.namespaces.slice(0, 7);
-    if (!top.length) {
-      box.appendChild(el("p", "quiet", "No namespace runs anything yet."));
-      return;
-    }
-    const max = top[0].images;
-    const list = el("ol", "users");
-    for (const ns of top) {
-      const li = el("li", "user-row");
-      const line = el("div", "user-line");
-      const name = el("span", "user-ns");
-      add(name, el("i", "sdot " + (ns.tone === "ok" ? "ok" : ns.tone)), el("span", "", ns.namespace || "(cluster)"));
-      const track = el("span", "bar-track");
-      const fill = el("i", "bar-fill ns");
-      fill.style.width = `${Math.max(3, ns.images / max * 100)}%`;
-      track.appendChild(fill);
-      add(line, name, track, el("span", "user-count", `${plural(ns.images, "image")} · ${plural(ns.containers, "container")}`));
-      line.title = `${ns.namespace}: ${plural(ns.images, "image")}, ${plural(ns.containers, "container")}, ${plural(ns.workloads.length, "workload")}`;
-      li.appendChild(line);
-      const ws = el("div", "user-workloads");
-      for (const w of ns.workloads.slice(0, 3)) ws.appendChild(workloadButton(w.workload, (x) => open(x, inv.images.find((i) => i.usages.some((u) => u.workload.key === x.key))), { namespace: false, detail: plural(w.images, "image") }));
-      if (ns.workloads.length > 3) ws.appendChild(el("span", "faint small", `+${ns.workloads.length - 3}`));
-      li.appendChild(ws);
-      list.appendChild(li);
-    }
-    box.appendChild(list);
+  var redrawBody = politely(byId("body"), drawBody);
+  function drawWhere() {
+    const parts = [state.ctx?.contextName ?? ""];
+    const s = state.report?.summary;
+    if (s) parts.push(plural(s.images, "image"));
+    if (s && s.updates) parts.push(`${s.updates} with updates`);
+    byId("where").textContent = parts.filter(Boolean).join(" · ");
   }
-  var SERIES = {
-    pulls: { token: "--chart-1", fallback: "#3987e5" },
-    failures: { token: "--error", fallback: "#f4787f" }
-  };
-  function seriesColour(name, index) {
-    return SERIES[name] ?? { token: `--chart-${Math.min(index + 1, 8)}`, fallback: "#3987e5" };
+  function drawNamespaces() {
+    const select = byId("namespace");
+    if (document.activeElement === select) return;
+    const rows = state.report?.rows ?? [];
+    const counts = /* @__PURE__ */ new Map();
+    for (const r of rows) for (const ns of r.namespaces) counts.set(ns, (counts.get(ns) ?? 0) + 1);
+    const names = [.../* @__PURE__ */ new Set([...counts.keys(), ...state.namespace ? [state.namespace] : []])].sort();
+    const want = [String(rows.length), ...names.map((ns) => `${ns}:${counts.get(ns) ?? 0}`)].join("|");
+    if (select.dataset.options === want) return;
+    select.dataset.options = want;
+    clear(select);
+    const anywhere = el("option", "", `Every namespace (${rows.length})`);
+    anywhere.value = "";
+    select.appendChild(anywhere);
+    for (const ns of names) {
+      const option = el("option", "", `${ns} (${counts.get(ns) ?? 0})`);
+      option.value = ns;
+      select.appendChild(option);
+    }
+    select.value = state.namespace;
   }
-  function drawHistory() {
-    const box = byId("history");
-    clear(box);
-    const panel = state.panel;
-    box.hidden = !panel || !panel.attached || !state.inventory || !state.inventory.images.length;
-    if (box.hidden || !panel) return;
-    const head = el("div", "section-head");
-    add(head, icon("chart"), el("h2", "", `Over the last ${Math.round(panel.range / 60) || 24} hours`));
-    if (panel.source.available && panel.source.describe) head.appendChild(el("span", "card-sub", "From Prometheus at " + panel.source.describe));
-    box.appendChild(head);
-    if (!panel.source.available) {
-      box.appendChild(
-        el(
-          "p",
-          "quiet",
-          "No Prometheus was found in this cluster, so there is no history to draw — everything above comes from the API server. " + (panel.source.error || "If yours lives somewhere the app did not look, set its address in the cluster’s settings.")
-        )
-      );
-      return;
-    }
-    const row = el("div", "chart-row");
-    for (const chart of panel.charts) row.appendChild(lineChart(chart, seriesColour));
-    box.appendChild(row);
+  function showControls(show) {
+    byId("search").hidden = !show;
+    byId("ns-pick").hidden = !show;
   }
-  var READ_KINDS = {
-    deployments: "Deployments",
-    statefulsets: "StatefulSets",
-    daemonsets: "DaemonSets",
-    replicasets: "ReplicaSets",
-    jobs: "Jobs",
-    cronjobs: "CronJobs",
-    events: "Events"
-  };
-  function drawFoot(opts = {}) {
-    const box = byId("foot");
-    clear(box);
-    box.hidden = false;
-    const go = el("div", "go");
-    add(
-      go,
-      button("Images", "go-tile", "grid", openImages),
-      button("Updates", "go-tile", "update", openUpdates),
-      button("Pods", "go-tile", "pod", () => sdk.open({ kind: "pods" }).catch(fail)),
-      button("Deployments", "go-tile", "deployment", () => sdk.open({ kind: "deployments" }).catch(fail)),
-      button("StatefulSets", "go-tile", "statefulset", () => sdk.open({ kind: "statefulsets" }).catch(fail)),
-      button("DaemonSets", "go-tile", "daemonset", () => sdk.open({ kind: "daemonsets" }).catch(fail)),
-      button("CronJobs", "go-tile", "cronjob", () => sdk.open({ kind: "cronjobs" }).catch(fail))
-    );
-    box.appendChild(go);
-    const summary = state.summary;
-    const podsCard = summary?.cards.find((c) => c.kind === "pods" && c.grouped);
-    if (podsCard && podsCard.total) {
-      const phases = el("div", "reqs");
-      phases.appendChild(el("span", "reqs-label", "Pods by phase"));
-      for (const b of podsCard.buckets) {
-        const tone = ["ok", "warn", "error", "info"].includes(b.tone) ? b.tone : "";
-        phases.appendChild(chip(`${b.value || "no status yet"} ${b.count}`, tone));
-      }
-      box.appendChild(phases);
-    }
-    if (summary && summary.requirements.length) {
-      const reqs = el("div", "reqs");
-      reqs.appendChild(el("span", "reqs-label", "This cluster serves"));
-      for (const r of summary.requirements) {
-        const tone = r.error ? "warn" : r.served ? "ok" : r.optional ? "muted" : "error";
-        reqs.appendChild(chip(r.label, tone, r.error ? "alert" : r.served ? "check" : "close", r.error || r.kind));
-      }
-      box.appendChild(reqs);
-    }
-    const errors = Object.entries(state.feed?.errors ?? {}).filter(([kind]) => kind !== "pods");
-    if (errors.length && opts.readErrors !== false) {
-      const note = el("p", "foot-note");
-      note.appendChild(icon("info"));
-      add(
-        note,
-        el(
-          "span",
-          "",
-          `Could not read ${words(errors.map(([kind]) => READ_KINDS[kind] ?? kind))}, so pods are grouped as far up their owners as the rest allows. ` + errors.map(([kind, msg]) => `${READ_KINDS[kind] ?? kind}: ${msg}`).join(" · ")
-        )
-      );
-      box.appendChild(note);
-    }
-    const plugin = state.ctx?.plugin;
-    const about = el("div", "about");
-    const who = el("span", "about-name");
-    add(who, icon("logo"), el("span", "", plugin?.name || "Image inventory"), plugin?.version ? el("span", "about-version", "v" + plugin.version) : null);
-    about.appendChild(who);
-    const links = [...plugin?.links ?? []];
-    if (plugin?.docs && !links.some((l) => l.url === plugin.docs)) links.unshift({ label: "Documentation", url: plugin.docs });
-    for (const l of links) {
-      const b = linkButton(l.label || l.url, () => openUrl(l.url), l.url);
-      b.prepend(icon("open"));
-      b.classList.add("about-link");
-      about.appendChild(b);
-    }
-    box.appendChild(about);
-  }
-  function drawAbsent(kind, detail) {
-    const hero = byId("hero");
-    clear(hero);
-    hero.className = "ov-hero absent";
-    for (const id of ["stats", "attention", "columns", "history"]) byId(id).hidden = true;
-    const main = el("div", "ov-hero-main");
+  function drawInstead(title, ...text) {
+    byId("main").hidden = true;
+    showControls(false);
+    const empty = byId("empty");
+    empty.hidden = false;
+    clear(empty);
     const art = el("div", "empty-art");
-    art.appendChild(icon("logo"));
-    main.appendChild(art);
-    const title = kind === "unreachable" ? "This cluster did not answer" : kind === "pods" ? "Pods could not be read" : `This cluster does not serve pods`;
-    const text = kind === "unreachable" ? "Whether anything runs here could not be checked — which is not the same as nothing running. The page tries again on its own." : kind === "pods" ? "Every image this page shows comes from the pods’ specs and statuses, so without them there is nothing to take stock of." : "Every Kubernetes cluster serves pods, so this is an API server that is not answering the usual way.";
-    add(main, el("h1", "ov-verdict", title), el("p", "ov-story", text));
-    if (detail) main.appendChild(el("code", "absent-detail", detail));
-    hero.appendChild(main);
-    drawFoot({ readErrors: false });
+    art.appendChild(icon("update"));
+    add(empty, art, el("h2", "", title), add(el("p", "faint"), ...text));
   }
-  function drawEmpty() {
-    const hero = byId("hero");
-    clear(hero);
-    hero.className = "ov-hero absent";
-    for (const id of ["stats", "attention", "columns", "history"]) byId(id).hidden = true;
-    const main = el("div", "ov-hero-main");
-    main.appendChild(eyebrow());
-    const art = el("div", "empty-art");
-    art.appendChild(icon("logo"));
-    main.appendChild(art);
-    add(
-      main,
-      el("h1", "ov-verdict", "No containers yet"),
-      el("p", "ov-story", "There are no pods or workloads in any namespace this cluster lets you list. Deploy something and its images appear here within a few seconds — with where they come from and whether they pull.")
-    );
-    const cta = el("div", "ov-cta");
-    cta.appendChild(button("About container images", "primary", "book", () => openUrl(DOCS)));
-    main.appendChild(cta);
-    hero.appendChild(main);
-    drawFoot();
+  function drawAll() {
+    const report = state.report;
+    drawWhere();
+    if (!report) return;
+    if (!report.rows.length) {
+      drawInstead("Nothing running to check", "No pod in this cluster runs a container right now. Once one does, its image is looked up here within a few seconds.");
+      return;
+    }
+    byId("empty").hidden = true;
+    byId("main").hidden = false;
+    showControls(true);
+    drawNamespaces();
+    drawHero();
+    if (report.signature === state.drawn) return;
+    state.drawn = report.signature;
+    redrawBody();
   }
-  function render() {
-    const summary = state.summary;
-    const feed = state.feed;
-    if (summary && !summary.checked) return drawAbsent("unreachable", summary.error);
-    if (summary && !summary.installed) return drawAbsent("missing", summary.requirements.filter((r) => !r.served && !r.optional).map((r) => r.kind).join(", "));
-    if (feed && !feed.ready && feed.errors.pods) return drawAbsent("pods", feed.errors.pods);
-    const inv = state.inventory;
-    if (!inv) return;
-    if (!inv.images.length) return drawEmpty();
-    byId("columns").hidden = false;
-    drawHero(inv);
-    drawStats(inv);
-    drawAttention(inv);
-    drawTop(inv);
-    drawUsers(inv);
-    drawHistory();
-    drawFoot();
+  var drawTimer;
+  function rebuild() {
+    if (!state.inventory) return;
+    state.report = buildUpdates(state.inventory, state.lookups);
+    if (drawTimer !== void 0) return;
+    drawTimer = setTimeout(() => {
+      drawTimer = void 0;
+      drawAll();
+    }, DRAW_AFTER);
   }
-  var redraw = politely(document.body, render);
+  byId("logo").appendChild(icon("logo"));
+  byId("search-icon").appendChild(icon("search"));
+  var query = byId("query");
+  query.value = state.query;
+  query.addEventListener("input", () => {
+    state.query = query.value;
+    remember();
+    drawBody();
+  });
+  query.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && query.value) {
+      query.value = "";
+      query.dispatchEvent(new Event("input"));
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "/" && document.activeElement === document.body) {
+      event.preventDefault();
+      query.focus();
+    }
+  });
+  var nsSelect = byId("namespace");
+  nsSelect.addEventListener("change", () => {
+    state.namespace = nsSelect.value;
+    remember();
+    drawBody();
+    nsSelect.blur();
+  });
+  var again = byId("again");
+  add(again, icon("restart"), el("span", "", "Check again"));
+  again.title = "Ask every registry again, rather than use the answers the app kept from the last half hour";
+  again.addEventListener("click", () => {
+    if (state.report && !asking()) ask(state.report.rows, true);
+  });
   function onFeed(feed) {
-    state.feed = feed;
-    if (feed.ready && feed.errors.pods) banner.show(feed.errors.pods);
+    if (feed.errors.pods) banner.show(feed.errors.pods);
     else banner.clear();
-    const inv = feed.ready ? buildInventory(feed.data) : null;
-    const sig = (inv?.signature ?? "none") + fingerprint(JSON.stringify(feed.errors));
-    if (sig === state.sig) return;
+    if (!feed.ready) return;
+    const inv = buildInventory(feed.data);
+    if (inv.signature === state.inventorySig) return;
+    const first = !state.inventory;
     state.inventory = inv;
-    state.sig = sig;
-    redraw();
+    state.inventorySig = inv.signature;
+    rebuild();
+    if (first) drawAll();
+    if (state.report) ask(state.report.rows, false);
   }
   sdk.ready().then((ctx) => {
     state.ctx = ctx;
-    startFeed(sdk, { onChange: onFeed });
-    every(SUMMARY_EVERY, async () => {
-      const summary = await sdk.summary();
-      const changed = JSON.stringify(summary) !== JSON.stringify(state.summary);
-      state.summary = summary;
-      if (changed) redraw();
-    });
-    every(CHARTS_EVERY, async () => {
-      state.panel = await sdk.charts({ minutes: HISTORY_MINUTES });
-      if (state.inventory) drawHistory();
-    });
-    sdk.on("theme", () => drawHistory());
+    drawWhere();
+    if (typeof sdk.registry?.lookup !== "function") {
+      drawInstead(
+        "Updates needs K8s Dockside 0.0.25 or newer",
+        "This page asks each image’s registry which tags it has, and only the app can do that on its behalf — this version of the app cannot yet. Update K8s Dockside to see which images have newer versions; the Overview and Images pages work as they are."
+      );
+      return;
+    }
+    if (!ctx.registries) {
+      drawInstead(
+        "This plugin does not ask to look up registries",
+        "The app asks an image’s registry only for a plugin whose plugin.json says ",
+        el("code", "", '"ui": { "registries": true }'),
+        ". Add it, then press Reload in Settings → Plugins."
+      );
+      return;
+    }
+    startFeed(sdk, { fast: PODS_EVERY, slow: OWNERS_EVERY, onChange: onFeed });
   }).catch(fail);
 })();

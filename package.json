@@ -1,6 +1,6 @@
 {
     "name": "k8sdockside-example-plugin-typescript",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "private": true,
     "description": "Image inventory: an example K8s Dockside plugin written in TypeScript. Which container images run in the cluster, where they come from, and which of them are risky.",
     "license": "Apache-2.0",

@@ -91,6 +91,13 @@
     const candidate = at >= 0 ? imageID.slice(at + 1) : imageID.replace(/^[a-z-]+:\/\//, "");
     return DIGEST.test(candidate) ? candidate : "";
   }
+  function repositoryOfImageID(imageID) {
+    if (!imageID) return "";
+    const at = imageID.lastIndexOf("@");
+    if (at <= 0) return "";
+    const ref = parseImageRef(imageID.slice(0, at).replace(/^[a-z-]+:\/\//, ""));
+    return ref.valid ? repositoryKey(ref) : "";
+  }
   var MOVING = /* @__PURE__ */ new Set([
     "main",
     "master",
@@ -348,9 +355,14 @@
       message: message2,
       restarts: status?.restartCount ?? 0,
       digest: digestOfImageID(status?.imageID),
+      digestFrom: repositoryOfImageID(status?.imageID),
       pullError: state2 === "waiting" && isPullReason(reason),
       eventMessage: eventMessages.get(`${ns}/${pod.metadata.name}/${container.name}`) ?? ""
     };
+  }
+  function comparableDigest(use, ref) {
+    if (ref.digest) return ref.digest;
+    return use.digest && use.digestFrom === repositoryKey(ref) ? use.digest : "";
   }
   function isUnwell(use) {
     if (use.finished || use.pullError || use.ready) return false;
@@ -376,7 +388,7 @@
       const key = ref.valid ? canonical(ref) : image.trim();
       let b = builders.get(key);
       if (!b) {
-        b = { key, ref, spellings: /* @__PURE__ */ new Set(), usages: /* @__PURE__ */ new Map() };
+        b = { key, ref, spellings: /* @__PURE__ */ new Set(), podSpelling: "", usages: /* @__PURE__ */ new Map() };
         builders.set(key, b);
       }
       b.spellings.add(image.trim());
@@ -410,7 +422,9 @@
       for (const { container, init } of templateContainers({ spec: pod.spec })) {
         if (!container.image) continue;
         const b = entryFor(container.image);
-        usageFor(b, workload, container, init).pods.push(podUse(pod, container, init, eventMessages));
+        const use = podUse(pod, container, init, eventMessages);
+        usageFor(b, workload, container, init).pods.push(use);
+        if (!use.finished && !b.podSpelling) b.podSpelling = container.image.trim();
       }
     }
     const images = [...builders.values()].map(finish);
@@ -437,6 +451,7 @@
     const digestCount = /* @__PURE__ */ new Map();
     for (const p of running) if (p.digest) digestCount.set(p.digest, (digestCount.get(p.digest) ?? 0) + 1);
     const digests = [...digestCount.entries()].sort((a, c) => c[1] - a[1] || a[0].localeCompare(c[0])).map(([d]) => d);
+    const builds = new Set(running.map((p) => comparableDigest(p, ref)).filter(Boolean));
     const pulling = running.filter((p) => p.pullError);
     const unwell = running.filter(isUnwell);
     const issues = [];
@@ -465,12 +480,13 @@
         text: `${count(unwell.length, "container")} of ${running.length} running it ${unwell.length === 1 ? "is" : "are"} not ready (${reasons.join(", ")}).`
       });
     }
-    if (!ref.digest && digests.length > 1) {
+    if (!ref.digest && builds.size > 1) {
+      const drifted = digests.filter((d) => builds.has(d));
       issues.push({
         kind: "drift",
         tone: "warn",
-        label: `${digests.length} builds`,
-        text: `Pods run ${digests.length} different builds of this tag (${digests.map(shortDigest).join(", ")}): it was pushed again after some nodes pulled it.`
+        label: `${drifted.length} builds`,
+        text: `Pods run ${drifted.length} different builds of this tag (${drifted.map(shortDigest).join(", ")}): it was pushed again after some nodes pulled it.`
       });
     }
     if (ref.valid && risk === "implicit") {
@@ -498,11 +514,13 @@
     issues.sort((a, c) => TONE_RANK[a.tone] - TONE_RANK[c.tone]);
     let tone = running.length ? "ok" : "muted";
     for (const i of issues) if (i.tone === "error" || i.tone === "warn") tone = worse(tone, i.tone);
+    const spellings = [...b.spellings].sort();
     return {
       key: b.key,
       ref,
       risk,
-      spellings: [...b.spellings].sort(),
+      spellings,
+      podSpelling: b.podSpelling || spellings[0] || b.key,
       usages,
       namespaces,
       containers: running.length,
@@ -735,6 +753,8 @@
     chevron: ["M9.5 6l6 6-6 6"],
     "chevron-down": ["M6 9.5l6 6 6-6"],
     restart: ["M20.5 12a8.5 8.5 0 1 1-2.6-6.1", "M20.5 4v5h-5"],
+    // An arrow up out of a circle: something newer to run.
+    update: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M12 16.5v-9", "M8.5 11 12 7.5l3.5 3.5"],
     logs: ["M4 5h16v14H4z", "M7.5 9.5l2.5 2.5-2.5 2.5", "M13 15h4"],
     edit: ["M4 20h4L19 9l-4-4L4 16z", "M14 6l4 4"],
     chart: ["M4 4v16h16", "M8 15l3-4 3 2 5-6"],

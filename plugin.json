@@ -2,8 +2,8 @@
     "$schema": "https://raw.githubusercontent.com/rogerwesterbo/k8sdockside/main/docs/plugin.schema.json",
     "id": "image-inventory",
     "name": "Image inventory",
-    "version": "1.0.0",
-    "minAppVersion": "0.0.15",
+    "version": "1.1.0",
+    "minAppVersion": "0.0.25",
     "tagline": "which container images run in this cluster, and where they come from",
     "icon": "layers",
     "author": "Roger Westerbo",
@@ -12,7 +12,7 @@
         { "label": "Container images", "url": "https://kubernetes.io/docs/concepts/containers/images/" },
         { "label": "Source", "url": "https://github.com/rogerwesterbo/k8sdockside-example-plugin-typescript" }
     ],
-    "description": "Every container image the cluster runs, grouped by registry, repository and tag, with the workloads and pods using each one. It works on any cluster: it reads only pods, the workloads that own them, and events.\n\nStart with the Overview: how many images come from how many registries, a ring of where they come from, and the images worth a look — those failing to pull (with the reason in plain words), with containers that are not ready, running two builds of one tag, or floating on :latest. Images is the working page: search and filter everything, open a workload or a pod's logs from it.\n\nDeployments, StatefulSets, DaemonSets and Pods also get an Images panel in their detail view, with each container's tag and digest and a Restart rollout button. Changes are always shown to you before they are made.",
+    "description": "Every container image the cluster runs, grouped by registry, repository and tag, with the workloads and pods using each one. It works on any cluster: it reads only pods, the workloads that own them, and events.\n\nStart with the Overview: how many images come from how many registries, a ring of where they come from, and the images worth a look — those failing to pull (with the reason in plain words), with containers that are not ready, running two builds of one tag, or floating on :latest. Images is the working page: search and filter everything, open a workload or a pod's logs from it.\n\nUpdates shows which running images have newer versions in their registries: a newer patch, minor or major version of a version tag, or a newer build behind a tag like :latest. The page has no network of its own; the app asks each public registry which tags it has, anonymously and on the page's behalf, so private images cannot be checked.\n\nDeployments, StatefulSets, DaemonSets and Pods also get an Images panel in their detail view, with each container's tag and digest and a Restart rollout button. Changes are always shown to you before they are made.",
     "requires": [
         { "kind": "pods", "label": "Pods" },
         { "kind": "deployments", "label": "Deployments" },
@@ -21,10 +21,14 @@
     ],
     "ui": {
         "kinds": ["replicasets", "jobs", "cronjobs", "events"],
-        "write": true
+        "write": true,
+        "registries": true
     },
     "overview": { "entry": "overview.html" },
-    "views": [{ "id": "images", "label": "Images", "icon": "dashboard", "type": "custom", "entry": "images.html" }],
+    "views": [
+        { "id": "images", "label": "Images", "icon": "dashboard", "type": "custom", "entry": "images.html" },
+        { "id": "updates", "label": "Updates", "icon": "refresh", "type": "custom", "entry": "updates.html" }
+    ],
     "cards": [
         {
             "label": "Pods",

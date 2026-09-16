@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Updates</title>
+        <link rel="stylesheet" href="image-inventory.css" />
+        <!-- The bridge to the app. Served by K8s Dockside itself, always at this path. -->
+        <script src="/plugin-ui/_sdk/k8sdockside.js"></script>
+    </head>
+    <body class="page page-updates">
+        <header class="top">
+            <div class="brand">
+                <span class="logo" id="logo"></span>
+                <div>
+                    <h1>Updates</h1>
+                    <p id="where" class="faint">Connecting…</p>
+                </div>
+            </div>
+            <label id="search" class="search" hidden>
+                <span id="search-icon"></span>
+                <input id="query" type="search" placeholder="Find an image, tag, workload or namespace" autocomplete="off" spellcheck="false" aria-label="Find an image" />
+            </label>
+            <label id="ns-pick" class="ns-pick" hidden>
+                <span class="faint small">Namespace</span>
+                <select id="namespace" class="picker"></select>
+            </label>
+        </header>
+
+        <p id="error" class="banner error" role="alert" hidden></p>
+
+        <div id="main" class="up-main" hidden>
+            <!-- The verdict, how far the registries have answered, and Check again. -->
+            <section id="hero" class="ov-hero up-hero busy">
+                <div class="up-hero-main">
+                    <h2 id="headline" class="ov-verdict"></h2>
+                    <p id="verdict" class="ov-story"></p>
+                    <p id="progress" class="up-progress" aria-live="polite"></p>
+                </div>
+                <div class="up-hero-side">
+                    <button id="again" type="button" class="ghost" disabled></button>
+                </div>
+            </section>
+
+            <div id="body" class="up-body">
+                <nav id="filters" class="up-filters" aria-label="Filter images"></nav>
+                <main id="list" class="up-list"></main>
+            </div>
+        </div>
+
+        <section id="empty" class="empty">
+            <div class="ov-loading">
+                <span class="pulse"></span>
+                <span>Reading what runs in this cluster…</span>
+            </div>
+        </section>
+
+        <!-- A classic script, not type="module": a sandboxed frame has an
+             opaque origin, so a module would be a cross-origin load.
+             Built from src/pages/updates.ts. -->
+        <script src="updates.js"></script>
+    </body>
+</html>

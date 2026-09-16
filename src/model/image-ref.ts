@@ -162,6 +162,26 @@ export function digestOfImageID(imageID: string | undefined): string {
 }
 
 /**
+ * The repository a container status's `imageID` names the digest under, as
+ * `repositoryKey` writes it -- `docker.io/library/nginx` -- or `''` when it
+ * names none.
+ *
+ * It is not always the image's own. A node that holds the same build under
+ * two names -- `registry.k8s.io/sig-storage/csi-attacher` and a mirror's copy
+ * of it -- reports one of them for both, with that name's digest; and a
+ * mirror's copy of an index can have a different digest from the original.
+ * A digest recorded under another repository says nothing about which build
+ * of this one runs.
+ */
+export function repositoryOfImageID(imageID: string | undefined): string {
+    if (!imageID) return '';
+    const at = imageID.lastIndexOf('@');
+    if (at <= 0) return '';
+    const ref = parseImageRef(imageID.slice(0, at).replace(/^[a-z-]+:\/\//, ''));
+    return ref.valid ? repositoryKey(ref) : '';
+}
+
+/**
  * How firmly a reference says which build runs:
  *
  * - `pinned`   -- a digest: the same bytes on every node, forever

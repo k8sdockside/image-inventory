@@ -34,6 +34,8 @@ export const ICONS = {
     chevron: ['M9.5 6l6 6-6 6'],
     'chevron-down': ['M6 9.5l6 6 6-6'],
     restart: ['M20.5 12a8.5 8.5 0 1 1-2.6-6.1', 'M20.5 4v5h-5'],
+    // An arrow up out of a circle: something newer to run.
+    update: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 16.5v-9', 'M8.5 11 12 7.5l3.5 3.5'],
     logs: ['M4 5h16v14H4z', 'M7.5 9.5l2.5 2.5-2.5 2.5', 'M13 15h4'],
     edit: ['M4 20h4L19 9l-4-4L4 16z', 'M14 6l4 4'],
     chart: ['M4 4v16h16', 'M8 15l3-4 3 2 5-6'],

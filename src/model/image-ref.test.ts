@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     canonical,
     digestOfImageID,
+    repositoryOfImageID,
     effectiveTag,
     familiar,
     familiarRepository,
@@ -171,5 +172,20 @@ describe('registryInfo', () => {
         expect(registryInfo('192.168.1.20:5000').local).toBe(true);
         expect(registryInfo('registry.kube-system.svc.cluster.local:5000').local).toBe(true);
         expect(registryInfo('ghcr.io').local).toBe(false);
+    });
+});
+
+describe('repositoryOfImageID', () => {
+    it.each([
+        [`docker.io/library/nginx@${SHA}`, 'docker.io/library/nginx'],
+        [`docker-pullable://nginx@${SHA}`, 'docker.io/library/nginx'],
+        [`docker.io/longhornio/csi-node-driver-registrar@${SHA}`, 'docker.io/longhornio/csi-node-driver-registrar'],
+        [`registry.k8s.io/sig-storage/csi-attacher@${SHA}`, 'registry.k8s.io/sig-storage/csi-attacher'],
+        [SHA, ''],
+        [`docker://${SHA}`, ''],
+        ['', ''],
+        [undefined, ''],
+    ])('%s -> %s', (imageID, want) => {
+        expect(repositoryOfImageID(imageID)).toBe(want);
     });
 });

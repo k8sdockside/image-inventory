@@ -4,7 +4,7 @@ A plugin for the [K8s Dockside](https://github.com/rogerwesterbo/k8sdockside)
 desktop app that shows **which container images run in the cluster**: where
 they come from, which workloads and pods use each one, and which of them are
 risky — failing to pull, not ready, running two builds of one tag, or floating
-on `:latest`.
+on `:latest` — and which of them have **newer versions** in their registries.
 
 It works on **any cluster**: it reads only core kinds (pods, the workloads that
 own them, and events), so you can install it and see it work immediately. It is
@@ -12,7 +12,8 @@ also written to be a template: the pages are TypeScript, bundled with esbuild,
 typed against a complete declaration file for the bridge, and between them they
 use nearly every call the bridge has.
 
-Needs **K8s Dockside 0.0.15 or newer**. Prometheus is optional, for two charts.
+Needs **K8s Dockside 0.0.25 or newer** (the first with `registry.lookup`, which
+the Updates page is built on). Prometheus is optional, for two charts.
 
 ## What it shows
 
@@ -49,6 +50,36 @@ pod's logs, the workload's details and its YAML one click away. The search,
 filters and open rows are kept in the page's address, so switching tabs and
 back loses nothing.
 
+**Updates** — which running images have something newer to run. A headline —
+*7 of 52 images have updates* — with the major, minor, patch and rebuilt counts,
+the containers and workloads they run in, and how many images could not be
+checked and the commonest reason. Each image shows its running tag and what is
+on offer beside it:
+
+- for a version tag, the newest **patch**, **minor** and **major** versions —
+  *patch 1.27.4 · minor 1.29.1 · major 2.0.1* — taken only from tags of the
+  same shape, so `1.27.3-alpine3.20` is offered `1.27.4-alpine3.21`, never
+  `1.27.4` or `1.27.4-alpine`. `v` prefixes, two-part (`16.4`) and one-part
+  tags, Bitnami's `-debian-12-r5` revisions and date tags (`20240101`) are
+  understood; pre-releases (`-rc.1`, `-beta2`, `-SNAPSHOT`) are offered only to
+  a pre-release, and a version is never offered a date-numbered tag;
+- for any tag, **rebuilt**: the registry's tag now points at a build (digest)
+  that some pods here do not run — for `:latest` or `:main` the only sign of
+  something newer, along with the repository's newest version
+  (*newest version 1.29.1*);
+- why an image could not be checked: *the registry wants credentials* (only
+  public images are checked), *is rate-limiting*, *does not know the
+  repository*, *could not be reached*.
+
+Filter by *Updates*, *Major*, *Minor*, *Patch*, *Rebuilt*, *Up to date*,
+*Can't tell* or *Couldn't check*, by namespace, and search by image, tag,
+workload or namespace; the workloads running an image open in the app, and
+Docker Hub and Quay images link to their tags page. **Check again** asks the
+registries afresh. The page has no network of its own: the app asks each
+image's registry on its behalf — anonymously, at most four at a time, keeping
+an answer for about half an hour — which the manifest allows with
+`"ui": { "registries": true }`.
+
 **Images panel** in the detail view of every Deployment, StatefulSet,
 DaemonSet and Pod: each container's image taken apart — registry, repository,
 tag, digest, the build actually running, pull policy — with any pull failure
@@ -84,18 +115,19 @@ Every call on `window.k8sdockside`, and where to find it:
 | Bridge call | Used for | File |
 | --- | --- | --- |
 | `ready()` | the context — cluster name, whether it may write, the object a panel is for, the plugin's links and version | every page |
-| `watch()` | pods every 5 s, workloads and events every 15 s; a kind that cannot be read costs only what it would have added | `src/model/feed.ts` |
+| `watch()` | pods every 5 s, workloads and events every 15 s (on Updates, every 15 and 60 s); a kind that cannot be read costs only what it would have added | `src/model/feed.ts` |
 | `list()` | a workload's own ReplicaSets and pods, by its selector; a namespace's events | `src/pages/workload.ts` |
 | `get()` | following a pod to its ReplicaSet and on to its Deployment | `src/pages/workload.ts` |
 | `object()` | the workload a panel is drawn for, read live | `src/pages/workload.ts` |
 | `namespaces()` | the namespace picker, with the ones that run nothing | `src/pages/images.ts` |
 | `summary()` | "does the cluster answer", what it serves, pods by phase (the manifest's card) | `src/pages/overview.ts` |
 | `charts()` | image pulls and distinct images from Prometheus, drawn as SVG | `src/pages/overview.ts`, `src/ui/charts.ts` |
+| `registry.lookup()` | each running image's tags and the build its tag points at, asked by the app of the image's registry; a failing registry answers with a status rather than rejecting. Needs `"ui": { "registries": true }` and app 0.0.25 | `src/pages/updates.ts` |
 | `patch()` | Restart rollout, confirmed by the user in the app; a "no" is not an error | `src/pages/workload.ts` |
 | `open()` | a workload or pod in the app's details panel; a kind's own tab | all pages |
-| `openView()` | the overview's Browse images | `src/pages/overview.ts` |
+| `openView()` | the overview's Browse images and Check for updates | `src/pages/overview.ts` |
 | `edit()`, `logs()` | a workload's YAML, a pod's logs | `src/pages/images.ts` |
-| `openUrl()` | the plugin's links and the Kubernetes docs | `src/pages/overview.ts` |
+| `openUrl()` | the plugin's links and the Kubernetes docs; an image's tags on Docker Hub or Quay | `src/pages/overview.ts`, `src/pages/updates.ts` |
 | `resize()` | the panel settling its height after a redraw (the SDK also follows it) | `src/pages/workload.ts` |
 | `on('theme')` | redrawing the charts, whose gradient stops take colours as values | `src/pages/overview.ts` |
 
@@ -112,6 +144,8 @@ The pure logic lives apart from the pages, with unit tests beside it:
 | `src/model/pull.ts` | why an image will not pull, in plain words, from the kubelet's messages and events |
 | `src/model/selector.ts` | a label selector as the text `list()` takes |
 | `src/model/inventory.ts` | the inventory: images grouped registry → repository → tag, the workloads and pods using each, and what is wrong with them |
+| `src/model/versions.ts` | tags read as versions — prefix, numbers, suffix and its shape, pre-releases — and the newest patch, minor and major among ten thousand of them |
+| `src/model/updates.ts` | the Updates page's rows: the inventory joined with the registries' answers, each image's state, and the summary the headline is made of |
 | `src/k8sdockside.d.ts` | the bridge's types (below) |
 
 ## Develop
@@ -164,6 +198,13 @@ go run github.com/rogerwesterbo/k8sdockside/cmd/plugincheck@main .
 - **No network.** The page's Content-Security-Policy refuses `fetch`, XHR and
   websockets; everything about the cluster comes through `window.k8sdockside`.
   Bundle what you need — there are no runtime dependencies here at all.
+- **Registries, through the app.** The one thing from outside the cluster —
+  which tags an image's registry has — the app asks for the page with
+  `registry.lookup()`, and only because the manifest says
+  `"ui": { "registries": true }`. It asks anonymously, so private images are
+  reported as needing credentials rather than checked. The Updates page tests
+  `typeof k8sdockside.registry?.lookup === 'function'` first and explains
+  itself on an app too old to have it.
 - **The theme is free.** The SDK puts the app's colour tokens on `:root`
   (`--bg`, `--bg-panel`, `--bg-raised`, `--text`, `--text-dim`, `--text-faint`,
   `--accent`, `--ok`, `--warn`, `--error`, `--chart-1` … `--chart-8`,
@@ -189,7 +230,8 @@ dev dependencies are `typescript`, `esbuild` and `vitest`.
 `src/k8sdockside.d.ts` declares `window.k8sdockside` completely — every call,
 its parameters, what it resolves with, and the events `on()` takes — with the
 documentation for each. It describes the bridge of K8s Dockside 0.0.15 and
-newer and is self-contained (global declarations only, no imports), so you can
+newer — `registry` and the context's `registries` from 0.0.25 — and is
+self-contained (global declarations only, no imports), so you can
 copy it into your own plugin as it is. Describe the fields you read by
 extending `K8sDockside.KubeObject`:
 
@@ -207,7 +249,8 @@ const pods = await k8sdockside.list<Pod>({ kind: 'pods', namespace: 'default' })
    `author`, `docs`, `links`, `description` and `version`.
 2. Replace `requires` with the kinds your solution needs (`crd:<plural>.<group>`
    for custom resources), and `ui.kinds` with anything else your pages read.
-   Drop `"write": true` if they never change anything.
+   Drop `"write": true` if they never change anything, and
+   `"registries": true` if they never ask a registry.
 3. Replace `views`, `sections`, `cards` and `charts` with your own; keep
    `overview` if you draw your own landing page.
 4. Replace `src/pages/*` (an `.html` and a `.ts` per page — the build picks up

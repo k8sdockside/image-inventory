@@ -21,6 +21,7 @@ import {
     parseImageRef,
     registryInfo,
     repositoryKey,
+    repositoryOfImageID,
     shortDigest,
     tagRisk,
     type ImageRef,
@@ -95,6 +96,12 @@ export interface PodUse {
     restarts: number;
     /** The digest the node actually pulled, from imageID; `''` until it has one. */
     digest: string;
+    /**
+     * The repository imageID names that digest under -- see
+     * `repositoryOfImageID`. Only a digest under the image's own repository
+     * can be compared with another build of it; `comparableDigest` says so.
+     */
+    digestFrom: string;
     /** The container is waiting because its image will not pull. */
     pullError: boolean;
     /** The most telling pull-failure event for this container, if any. */
@@ -132,6 +139,12 @@ export interface ImageEntry {
     risk: TagRisk;
     /** Every way the reference is spelled in the cluster: `nginx`, `docker.io/library/nginx:latest`. */
     spellings: string[];
+    /**
+     * The reference as a running pod's spec writes it -- what to hand the app
+     * when asking about the image, since it checks that a pod runs it. The
+     * first spelling when no pod runs it.
+     */
+    podSpelling: string;
     usages: Usage[];
     namespaces: string[];
     /** Containers running it now (in pods that have not finished). */
@@ -316,9 +329,21 @@ export function podUse(pod: Pod, container: Container, init: boolean, eventMessa
         message,
         restarts: status?.restartCount ?? 0,
         digest: digestOfImageID(status?.imageID),
+        digestFrom: repositoryOfImageID(status?.imageID),
         pullError: state === 'waiting' && isPullReason(reason),
         eventMessage: eventMessages.get(`${ns}/${pod.metadata.name}/${container.name}`) ?? '',
     };
+}
+
+/**
+ * The build a container runs, as a digest that can be compared with the
+ * registry's and with other pods' -- `''` when it cannot be. A reference
+ * pinned by digest runs that digest; otherwise it is the pulled digest, if
+ * the node recorded it under the image's own repository.
+ */
+export function comparableDigest(use: PodUse, ref: ImageRef): string {
+    if (ref.digest) return ref.digest;
+    return use.digest && use.digestFrom === repositoryKey(ref) ? use.digest : '';
 }
 
 /** Whether a running container's state is worth a warning: not a pull failure, and not merely starting. */
@@ -336,6 +361,7 @@ interface Builder {
     key: string;
     ref: ImageRef;
     spellings: Set<string>;
+    podSpelling: string;
     usages: Map<string, Usage>;
 }
 
@@ -358,7 +384,7 @@ export function buildInventory(data: ClusterData): Inventory {
         const key = ref.valid ? canonical(ref) : image.trim();
         let b = builders.get(key);
         if (!b) {
-            b = { key, ref, spellings: new Set(), usages: new Map() };
+            b = { key, ref, spellings: new Set(), podSpelling: '', usages: new Map() };
             builders.set(key, b);
         }
         b.spellings.add(image.trim());
@@ -397,7 +423,9 @@ export function buildInventory(data: ClusterData): Inventory {
         for (const { container, init } of templateContainers({ spec: pod.spec })) {
             if (!container.image) continue;
             const b = entryFor(container.image);
-            usageFor(b, workload, container, init).pods.push(podUse(pod, container, init, eventMessages));
+            const use = podUse(pod, container, init, eventMessages);
+            usageFor(b, workload, container, init).pods.push(use);
+            if (!use.finished && !b.podSpelling) b.podSpelling = container.image.trim();
         }
     }
 
@@ -432,6 +460,10 @@ function finish(b: Builder): ImageEntry {
     const digestCount = new Map<string, number>();
     for (const p of running) if (p.digest) digestCount.set(p.digest, (digestCount.get(p.digest) ?? 0) + 1);
     const digests = [...digestCount.entries()].sort((a, c) => c[1] - a[1] || a[0].localeCompare(c[0])).map(([d]) => d);
+    // Two builds of one tag only when both digests are this repository's: a
+    // node that reports a mirror's name and digest for the same build is not
+    // running a different one.
+    const builds = new Set(running.map((p) => comparableDigest(p, ref)).filter(Boolean));
 
     const pulling = running.filter((p) => p.pullError);
     const unwell = running.filter(isUnwell);
@@ -462,12 +494,13 @@ function finish(b: Builder): ImageEntry {
             text: `${count(unwell.length, 'container')} of ${running.length} running it ${unwell.length === 1 ? 'is' : 'are'} not ready (${reasons.join(', ')}).`,
         });
     }
-    if (!ref.digest && digests.length > 1) {
+    if (!ref.digest && builds.size > 1) {
+        const drifted = digests.filter((d) => builds.has(d));
         issues.push({
             kind: 'drift',
             tone: 'warn',
-            label: `${digests.length} builds`,
-            text: `Pods run ${digests.length} different builds of this tag (${digests.map(shortDigest).join(', ')}): it was pushed again after some nodes pulled it.`,
+            label: `${drifted.length} builds`,
+            text: `Pods run ${drifted.length} different builds of this tag (${drifted.map(shortDigest).join(', ')}): it was pushed again after some nodes pulled it.`,
         });
     }
     if (ref.valid && risk === 'implicit') {
@@ -501,11 +534,13 @@ function finish(b: Builder): ImageEntry {
     let tone: Tone = running.length ? 'ok' : 'muted';
     for (const i of issues) if (i.tone === 'error' || i.tone === 'warn') tone = worse(tone, i.tone);
 
+    const spellings = [...b.spellings].sort();
     return {
         key: b.key,
         ref,
         risk,
-        spellings: [...b.spellings].sort(),
+        spellings,
+        podSpelling: b.podSpelling || spellings[0] || b.key,
         usages,
         namespaces,
         containers: running.length,

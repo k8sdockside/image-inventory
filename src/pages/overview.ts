@@ -57,6 +57,12 @@ function openImages(): void {
     sdk.openView('images').catch(fail);
 }
 
+// The overview only links to Updates: asking registries is that page's job,
+// and it asks once per image, which is not something to do on every visit here.
+function openUpdates(): void {
+    sdk.openView('updates').catch(fail);
+}
+
 function openUrl(url: string): void {
     sdk.openUrl(url).catch(fail);
 }
@@ -177,6 +183,7 @@ function drawHero(inv: Inventory): void {
     add(
         cta,
         button('Browse images', 'primary', 'grid', openImages),
+        button('Check for updates', 'ghost', 'update', openUpdates),
         button('Pods', 'ghost', 'pod', () => sdk.open({ kind: 'pods' }).catch(fail)),
         button('About image references', 'ghost', 'book', () => openUrl(DOCS + '#image-names')),
     );
@@ -411,6 +418,7 @@ function drawFoot(opts: { readErrors?: boolean } = {}): void {
     add(
         go,
         button('Images', 'go-tile', 'grid', openImages),
+        button('Updates', 'go-tile', 'update', openUpdates),
         button('Pods', 'go-tile', 'pod', () => sdk.open({ kind: 'pods' }).catch(fail)),
         button('Deployments', 'go-tile', 'deployment', () => sdk.open({ kind: 'deployments' }).catch(fail)),
         button('StatefulSets', 'go-tile', 'statefulset', () => sdk.open({ kind: 'statefulsets' }).catch(fail)),

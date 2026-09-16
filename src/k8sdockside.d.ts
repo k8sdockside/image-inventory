@@ -2,8 +2,8 @@
  * k8sdockside.d.ts -- types for the K8s Dockside plugin bridge.
  *
  * Describes the bridge of K8s Dockside >= 0.0.15 (protocol
- * "k8sdockside/plugin@1"): the `window.k8sdockside` object a plugin's own
- * pages get from
+ * "k8sdockside/plugin@1"), with `registry` from 0.0.25: the
+ * `window.k8sdockside` object a plugin's own pages get from
  *
  *     <script src="/plugin-ui/_sdk/k8sdockside.js"></script>
  *
@@ -26,7 +26,8 @@
  *
  * The page itself has no network: fetch, XHR and websockets are refused by
  * its Content-Security-Policy, and it must be a classic script, not
- * `type="module"`.
+ * `type="module"`. What it may learn from outside the cluster -- which tags
+ * an image's registry has -- the app asks for it (`registry.lookup`).
  */
 
 declare namespace K8sDockside {
@@ -199,6 +200,12 @@ declare namespace K8sDockside {
          * out, so read it as `ctx.plugin?.links ?? []`.
          */
         plugin?: PluginInfo;
+        /**
+         * Whether the manifest says `"ui": { "registries": true }` -- whether
+         * `registry.lookup` can be asked at all. An app older than 0.0.25
+         * leaves it out.
+         */
+        registries: boolean;
         /** The theme at the moment the page loaded. See `on('theme')` for changes. */
         theme: Theme;
     }
@@ -352,6 +359,50 @@ declare namespace K8sDockside {
         range: number;
     }
 
+    // ----- registries -------------------------------------------------------------
+
+    /** What `registry.lookup` is asked. */
+    interface RegistryLookupQuery {
+        /** An image reference as a pod spec writes it: `nginx:1.27`, `ghcr.io/org/app:v1@sha256:…`. The cluster must be running it. */
+        image: string;
+        /** Ask the registry again rather than use the app's recent answer (kept ~30 minutes). The app still asks at most once a minute per image. */
+        refresh?: boolean;
+    }
+
+    /**
+     * How the registry answered:
+     * - `ok`          -- it listed the tags
+     * - `auth`        -- it wants credentials; the app only asks anonymously, so private images cannot be checked
+     * - `missing`     -- it does not know the repository (or the tag)
+     * - `limited`     -- it is rate-limiting; try again later
+     * - `unreachable` -- it could not be reached (DNS, TLS, timeout, plain-http registry)
+     * - `error`       -- anything else; `error` says what
+     */
+    type RegistryStatus = 'ok' | 'auth' | 'missing' | 'limited' | 'unreachable' | 'error';
+
+    /** What `registry.lookup` resolves with. */
+    interface RegistryLookup {
+        /** The reference as asked. */
+        image: string;
+        /** Registry host with Docker Hub's aliases folded into `docker.io`. */
+        registry: string;
+        /** Path in the registry, `library/` included for Docker Hub's official images. */
+        repository: string;
+        /** The tag the reference names (`latest` when none is written; `''` for a digest-only reference). */
+        tag: string;
+        /** Every tag the registry lists for the repository, in the registry's order (not sorted by version). */
+        tags: string[];
+        /** The registry had more tags than the app reads (it stops at 10000). */
+        truncated: boolean;
+        /** The digest `tag` points at in the registry right now (`sha256:…`, the index/manifest-list digest, the same one a pod's `imageID` records when pulled by tag); `''` when unknown or when there is no tag. */
+        digest: string;
+        /** When the registry was asked (RFC 3339). */
+        checkedAt: string;
+        status: RegistryStatus;
+        /** What went wrong, in words; `''` when status is `ok`. */
+        error: string;
+    }
+
     // ----- writing --------------------------------------------------------------
 
     interface PatchRequest {
@@ -457,6 +508,17 @@ declare namespace K8sDockside {
          * has no overview charts.
          */
         charts(query?: ChartsQuery): Promise<ChartsPanel>;
+
+        /**
+         * The registries the cluster's images come from, asked by the app on
+         * the page's behalf -- anonymously, so only public images can be
+         * checked. `undefined` on an app older than 0.0.25: test
+         * `typeof k8sdockside.registry?.lookup === 'function'` before calling.
+         */
+        registry: {
+            /** Asks the image's registry which tags it has, and what the image's tag points at now. Needs "ui": { "registries": true }. Rejects when the plugin does not declare that, when the reference is not valid, or when no pod in this cluster runs the image; a registry that fails answers with a `status` other than `ok` instead of rejecting. */
+            lookup(query: RegistryLookupQuery): Promise<RegistryLookup>;
+        };
 
         /**
          * Asks to merge-patch one object. Needs `"ui": { "write": true }` and

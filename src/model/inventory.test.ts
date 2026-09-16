@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildInventory, pullEvents, resolveWorkload, type ClusterData, type ImageEntry } from './inventory';
+import { parseImageRef, repositoryKey } from './image-ref';
 import type { Container, ContainerStatus, CronJob, Job, KubeEvent, Pod, Workload } from './kube';
 
 const SHA_A = 'sha256:' + 'a'.repeat(64);
@@ -40,12 +41,17 @@ function pod(ns: string, name: string, containers: Container[], o: PodOpts = {})
                 ready: true,
                 restartCount: 0,
                 state: { running: { startedAt: '2026-01-01T00:00:00Z' } },
-                imageID: `docker.io/library/x@${SHA_A}`,
+                imageID: `${repositoryOf(containers[i]?.image ?? 'x')}@${SHA_A}`,
                 ...s,
             })),
             initContainerStatuses: (o.initStatuses ?? []).map((s, i) => ({ name: o.init?.[i]?.name ?? 'i', ...s })),
         },
     };
+}
+
+/** The repository a node records an image's digest under: its own. */
+function repositoryOf(image: string): string {
+    return repositoryKey(parseImageRef(image));
 }
 
 function pullFailure(reason: string, message: string): Partial<ContainerStatus> {
@@ -223,6 +229,17 @@ describe('buildInventory', () => {
         expect(statsd.digests).toEqual([SHA_A, SHA_B]);
     });
 
+    it("does not take a mirror's digest for a second build", () => {
+        const image = 'registry.k8s.io/sig-storage/csi-attacher:v4.11.0';
+        const inv = buildInventory({
+            pods: [
+                pod('rook', 'a', [{ name: 'csi', image }], { statuses: [{ imageID: `registry.k8s.io/sig-storage/csi-attacher@${SHA_A}` }] }),
+                pod('rook', 'b', [{ name: 'csi', image }], { node: 'node-2', statuses: [{ imageID: `docker.io/longhornio/csi-attacher@${SHA_B}` }] }),
+            ],
+        });
+        expect(find(inv, image).issues.map((i) => i.kind)).not.toContain('drift');
+    });
+
     it('keeps images nothing runs right now, and says why', () => {
         const inv = buildInventory(cluster());
         const busybox = find(inv, 'docker.io/library/busybox:1.36');
@@ -288,6 +305,21 @@ describe('buildInventory', () => {
         const changed = cluster();
         changed.pods[0]!.status!.containerStatuses![0]!.restartCount = 1;
         expect(buildInventory(changed).signature).not.toBe(a);
+    });
+
+    it('remembers how a running pod spells an image, to ask the app about it', () => {
+        const inv = buildInventory({
+            deployments: [deployment('shop', 'web', [{ name: 'web', image: 'docker.io/library/nginx:1.27' }])],
+            pods: [
+                pod('shop', 'old', [{ name: 'web', image: 'index.docker.io/library/nginx:1.27' }], { phase: 'Succeeded' }),
+                pod('shop', 'web-1', [{ name: 'web', image: 'nginx:1.27' }]),
+            ],
+        });
+        const nginx = find(inv, 'docker.io/library/nginx:1.27');
+        expect(nginx.spellings).toEqual(['docker.io/library/nginx:1.27', 'index.docker.io/library/nginx:1.27', 'nginx:1.27']);
+        expect(nginx.podSpelling).toBe('nginx:1.27');
+        const idle = buildInventory({ pods: [], deployments: [deployment('tools', 'box', [{ name: 'box', image: 'busybox:1.36' }])] });
+        expect(idle.images[0]!.podSpelling).toBe('busybox:1.36');
     });
 
     it('is empty, not broken, for an empty cluster', () => {

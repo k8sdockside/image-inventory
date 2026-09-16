@@ -2397,3 +2397,234 @@ body.page-section {
 p.sec-foot {
     display: block;
 }
+
+/* ===== the Updates view ========================================================================== */
+
+/* It shares the Images view's header, and the overview's verdict. */
+.up-main {
+    display: grid;
+    gap: 16px;
+    padding: 18px 24px 40px;
+    min-width: 0;
+}
+
+.up-hero {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+    padding: 20px 24px;
+    align-items: start;
+}
+
+.up-hero.busy {
+    --tone: var(--c-accent);
+}
+
+.up-hero.muted {
+    --tone: var(--c-faint);
+}
+
+.up-hero-main {
+    min-width: 0;
+}
+
+.up-hero .ov-verdict {
+    margin: 0 0 8px;
+    font-size: 22px;
+}
+
+.up-hero .ov-verdict .ico {
+    width: 26px;
+    height: 26px;
+    padding: 5px;
+}
+
+.up-hero .ov-story {
+    max-width: 90ch;
+    font-size: 13.5px;
+}
+
+.up-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--c-faint);
+}
+
+.up-progress .pulse {
+    width: 9px;
+    height: 9px;
+}
+
+.up-progress .ico {
+    width: 13px;
+    height: 13px;
+}
+
+@media (max-width: 620px) {
+    .up-main {
+        padding: 12px 14px 30px;
+    }
+    .up-hero {
+        grid-template-columns: minmax(0, 1fr);
+        padding: 16px 18px;
+    }
+    .up-hero .ov-verdict {
+        font-size: 19px;
+    }
+}
+
+/* The filters: one row of pills, each state's icon in its colour. */
+.up-body {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+}
+
+.up-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.up-filters button.filter {
+    width: auto;
+    padding: 3px 10px;
+    border: 1px solid var(--c-soft);
+    border-radius: 999px;
+}
+
+.up-filters .filter-label {
+    flex: none;
+}
+
+.up-filters button.filter.zero:not(.on) {
+    opacity: 0.6;
+}
+
+.up-filters button.filter.major .ico {
+    color: var(--c-error);
+}
+.up-filters button.filter.minor .ico {
+    color: var(--c-warn);
+}
+.up-filters button.filter.patch .ico,
+.up-filters button.filter.rebuilt .ico {
+    color: var(--c-info);
+}
+.up-filters button.filter.current .ico {
+    color: var(--c-ok);
+}
+
+/* The rows, in one card, drawn like the Images view's tags. */
+.up-list {
+    border-radius: 14px;
+    background: var(--c-panel);
+    border: 1px solid var(--c-soft);
+    overflow: hidden;
+    min-width: 0;
+}
+
+.up-row.major {
+    --tone: var(--c-error);
+}
+.up-row.minor {
+    --tone: var(--c-warn);
+}
+.up-row.patch,
+.up-row.rebuilt {
+    --tone: var(--c-info);
+}
+.up-row.current {
+    --tone: color-mix(in srgb, var(--c-ok) 45%, transparent);
+}
+.up-row.failed,
+.up-row.unknown,
+.up-row.pending {
+    --tone: var(--c-line);
+}
+
+.up-row .repo-name {
+    flex: 0 1 auto;
+}
+
+/* The state, as a mark at the start of a row. */
+.up-mark {
+    --tone: var(--c-faint);
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    color: var(--tone);
+    background: color-mix(in srgb, var(--tone) 15%, transparent);
+    flex: none;
+}
+
+.up-mark .ico {
+    width: 13px;
+    height: 13px;
+}
+
+.up-mark.major {
+    --tone: var(--c-error);
+}
+.up-mark.minor {
+    --tone: var(--c-warn);
+}
+.up-mark.patch,
+.up-mark.rebuilt {
+    --tone: var(--c-info);
+}
+.up-mark.current {
+    --tone: var(--c-ok);
+}
+
+.up-mark.pending .ico {
+    animation: up-wait 1.6s ease-in-out infinite;
+}
+
+@keyframes up-wait {
+    50% {
+        opacity: 0.35;
+    }
+}
+
+.up-reg {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--c-faint);
+    white-space: nowrap;
+}
+
+.up-reg .swatch {
+    width: 8px;
+    height: 8px;
+}
+
+.up-foot {
+    padding-left: 30px;
+    font-size: 12px;
+    color: var(--c-dim);
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.up-foot code {
+    color: var(--c-text);
+    font-size: 11px;
+}
+
+.up-reason {
+    color: var(--c-warn);
+}
+
+@media (max-width: 640px) {
+    .up-foot {
+        padding-left: 0;
+    }
+}
