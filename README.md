@@ -1,6 +1,6 @@
 # Image inventory — an example K8s Dockside plugin in TypeScript
 
-A plugin for the [K8s Dockside](https://github.com/rogerwesterbo/k8sdockside)
+A plugin for the [K8s Dockside](https://github.com/k8sdockside/k8sdockside)
 desktop app that shows **which container images run in the cluster**: where
 they come from, which workloads and pods use each one, and which of them are
 risky — failing to pull, not ready, running two builds of one tag, or floating
@@ -94,7 +94,7 @@ workload that owns it.
 **Settings → Plugins → From a repository**, and paste
 
 ```
-https://github.com/rogerwesterbo/k8sdockside-example-plugin-typescript
+https://github.com/k8sdockside/image-inventory
 ```
 
 The app clones the repository into its plugins folder and gives the plugin's
@@ -175,7 +175,7 @@ To check the manifest the way the app loads it — every field, kind, icon,
 link, version, query and page — run the app's checker, as CI does:
 
 ```sh
-go run github.com/rogerwesterbo/k8sdockside/cmd/plugincheck@main .
+go run github.com/k8sdockside/k8sdockside/cmd/plugincheck@main .
 ```
 
 ### How it is built

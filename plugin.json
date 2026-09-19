@@ -1,5 +1,5 @@
 {
-    "$schema": "https://raw.githubusercontent.com/rogerwesterbo/k8sdockside/main/docs/plugin.schema.json",
+    "$schema": "https://raw.githubusercontent.com/k8sdockside/k8sdockside/main/docs/plugin.schema.json",
     "id": "image-inventory",
     "name": "Image inventory",
     "version": "1.1.0",
@@ -7,11 +7,11 @@
     "tagline": "which container images run in this cluster, and where they come from",
     "icon": "layers",
     "logo": "logo.svg",
-    "author": "Roger Westerbo",
+    "author": "K8s Dockside",
     "docs": "https://kubernetes.io/docs/concepts/containers/images/",
     "links": [
         { "label": "Container images", "url": "https://kubernetes.io/docs/concepts/containers/images/" },
-        { "label": "Source", "url": "https://github.com/rogerwesterbo/k8sdockside-example-plugin-typescript" }
+        { "label": "Source", "url": "https://github.com/k8sdockside/image-inventory" }
     ],
     "description": "Every container image the cluster runs, grouped by registry, repository and tag, with the workloads and pods using each one. It works on any cluster: it reads only pods, the workloads that own them, and events.\n\nStart with the Overview: how many images come from how many registries, a ring of where they come from, and the images worth a look — those failing to pull (with the reason in plain words), with containers that are not ready, running two builds of one tag, or floating on :latest. Images is the working page: search and filter everything, open a workload or a pod's logs from it.\n\nUpdates shows which running images have newer versions in their registries: a newer patch, minor or major version of a version tag, or a newer build behind a tag like :latest. The page has no network of its own; the app asks each public registry which tags it has, anonymously and on the page's behalf, so private images cannot be checked.\n\nDeployments, StatefulSets, DaemonSets and Pods also get an Images panel in their detail view, with each container's tag and digest and a Restart rollout button. Changes are always shown to you before they are made.",
     "requires": [
