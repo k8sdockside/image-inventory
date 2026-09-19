@@ -3,9 +3,10 @@
     "id": "image-inventory",
     "name": "Image inventory",
     "version": "1.1.0",
-    "minAppVersion": "0.0.25",
+    "minAppVersion": "0.0.30",
     "tagline": "which container images run in this cluster, and where they come from",
     "icon": "layers",
+    "logo": "logo.svg",
     "author": "Roger Westerbo",
     "docs": "https://kubernetes.io/docs/concepts/containers/images/",
     "links": [
