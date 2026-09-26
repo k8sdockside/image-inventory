@@ -1,4 +1,4 @@
-// Built by scripts/build.mjs from src/ -- edit the TypeScript there, not this file.
+// Built by k8sdockside-plugin from src/ -- edit the TypeScript there, not this file.
 "use strict";
 (() => {
   // src/model/image-ref.ts
@@ -1407,10 +1407,12 @@
     drawHero();
   }
   function pump() {
+    const registry = sdk.registry;
+    if (!registry) return;
     while (questions.inFlight < IN_FLIGHT && questions.waiting.length) {
       const q = questions.waiting.shift();
       questions.inFlight++;
-      sdk.registry.lookup({ image: q.image, refresh: q.refresh }).catch((err) => refusedLookup(q.ref, q.image, message(err), (/* @__PURE__ */ new Date()).toISOString())).then((answer) => {
+      registry.lookup({ image: q.image, refresh: q.refresh }).catch((err) => refusedLookup(q.ref, q.image, message(err), (/* @__PURE__ */ new Date()).toISOString())).then((answer) => {
         state.lookups.set(q.key, answer);
       }).finally(() => {
         questions.inFlight--;

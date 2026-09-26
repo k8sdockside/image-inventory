@@ -140,10 +140,13 @@ function ask(rows: readonly UpdateRow[], refresh: boolean): void {
 }
 
 function pump(): void {
+    // Checked when the page starts: an app without it never gets this far.
+    const registry = sdk.registry;
+    if (!registry) return;
     while (questions.inFlight < IN_FLIGHT && questions.waiting.length) {
         const q = questions.waiting.shift()!;
         questions.inFlight++;
-        sdk.registry
+        registry
             .lookup({ image: q.image, refresh: q.refresh })
             // A refusal -- the pod running it went away, say -- is kept as a
             // failed answer, so the row says why instead of waiting forever.

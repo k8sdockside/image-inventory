@@ -131,7 +131,7 @@ Every call on `window.k8sdockside`, and where to find it:
 | `resize()` | the panel settling its height after a redraw (the SDK also follows it) | `src/pages/workload.ts` |
 | `on('theme')` | redrawing the charts, whose gradient stops take colours as values | `src/pages/overview.ts` |
 
-`actions()` and `run()` are typed in `src/k8sdockside.d.ts` but not used: they
+`actions()` and `run()` are typed in the SDK but not used: they
 drive buttons declared in a manifest's `actions`, and there is nothing
 image-related worth putting on every Deployment's action bar. The restart is
 a `patch()` from the page instead, because it needs the current time in it.
@@ -146,7 +146,6 @@ The pure logic lives apart from the pages, with unit tests beside it:
 | `src/model/inventory.ts` | the inventory: images grouped registry → repository → tag, the workloads and pods using each, and what is wrong with them |
 | `src/model/versions.ts` | tags read as versions — prefix, numbers, suffix and its shape, pre-releases — and the newest patch, minor and major among ten thousand of them |
 | `src/model/updates.ts` | the Updates page's rows: the inventory joined with the registries' answers, each image's state, and the summary the headline is made of |
-| `src/k8sdockside.d.ts` | the bridge's types (below) |
 
 ## Develop
 
@@ -221,18 +220,20 @@ go run github.com/k8sdockside/k8sdockside/cmd/plugincheck@main .
 - **Secrets are never readable** by a plugin page, whatever it declares, and
   this plugin does not ask. Every patch is shown to the user in the app first.
 
-`scripts/build.mjs` is the whole build: esbuild plus a copy of
-`src/pages/*.html` and `src/styles/*.css`, with nothing else in `ui/`. The only
-dev dependencies are `typescript`, `esbuild` and `vitest`.
+`k8sdockside-plugin build`, from `@k8sdockside/plugin-sdk`, is the whole
+build: esbuild plus a copy of `src/pages/*.html` and `src/styles/*.css`, with
+nothing else in `ui/`. The only dev dependencies are the SDK, `typescript` and
+`vitest`.
 
 ## The bridge's types
 
-`src/k8sdockside.d.ts` declares `window.k8sdockside` completely — every call,
+[`@k8sdockside/plugin-sdk`](https://github.com/k8sdockside/k8sdockside/tree/main/packages/plugin-sdk)
+declares `window.k8sdockside` completely — every call,
 its parameters, what it resolves with, and the events `on()` takes — with the
 documentation for each. It describes the bridge of K8s Dockside 0.0.15 and
 newer — `registry` and the context's `registries` from 0.0.25 — and is
-self-contained (global declarations only, no imports), so you can
-copy it into your own plugin as it is. Describe the fields you read by
+brought in by `tsconfig.json` extending `@k8sdockside/plugin-sdk/tsconfig.json`,
+so a plugin has no copy of its own to keep up to date. Describe the fields you read by
 extending `K8sDockside.KubeObject`:
 
 ```ts
@@ -255,8 +256,7 @@ const pods = await k8sdockside.list<Pod>({ kind: 'pods', namespace: 'default' })
    `overview` if you draw your own landing page.
 4. Replace `src/pages/*` (an `.html` and a `.ts` per page — the build picks up
    every `src/pages/*.ts`), `src/model/*` and `src/styles/image-inventory.css`
-   (rename it, and the `<link>` in each page). Keep `src/ui/` and
-   `src/k8sdockside.d.ts` if they are useful.
+   (rename it, and the `<link>` in each page). Keep `src/ui/` if it is useful.
 5. Rename the package in `package.json`, rewrite this README, and run
    `npm run build` and commit `ui/`.
 
